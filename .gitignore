@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+
+# 本地数据（数据库可选择不提交，由 Actions 运行时重新获取）
+# data/*.db
+
+# 日志
+logs/*.log
+!logs/.gitkeep
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# 环境变量
+.env
+config/local.yaml

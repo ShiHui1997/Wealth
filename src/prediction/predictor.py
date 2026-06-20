@@ -19,12 +19,40 @@ class DaletouPredictor:
         self.analyzer = DaletouAnalyzer(front_range, back_range)
 
     def predict(self, draws: List[Dict], top_n: int = 3,
-                candidates_count: int = 100) -> List[Tuple[Dict, float]]:
+                candidates_count: int = 100,
+                storage=None) -> List[Tuple[Dict, float]]:
         """
         预测下一期号码
+        storage: 可选，传入则以它加载校准权重
         Returns: [(号码dict, 相似度得分), ...] 按得分降序
         """
         print(f"\n[预测] 基于最近 {len(draws)} 期数据进行分析...")
+
+        # 加载校准权重（如果可用）
+        weights = None
+        if storage:
+            calibrations = storage.get_all_calibrations()
+            weight_keys = {
+                "front_sum": 0.25,
+                "odd_even": 0.15,
+                "zone":      0.20,
+                "span":      0.15,
+                "consecutive": 0.10,
+                "back_sum":  0.10,
+                "frequency":  0.05,
+            }
+            loaded = {}
+            for key in weight_keys:
+                cal_key = f"weight_{key}"
+                if cal_key in calibrations:
+                    loaded[key] = calibrations[cal_key]
+            if loaded:
+                # 归一化
+                total = sum(loaded.values())
+                weights = {k: v / total for k, v in loaded.items()}
+                print(f"[预测] 使用校准权重: {weights}")
+            else:
+                print("[预测] 使用默认权重")
 
         # 第一步：从历史数据中提取特征（"学习随机性"）
         features = self.analyzer.build_features(draws)
@@ -59,7 +87,9 @@ class DaletouPredictor:
         # 第三步：对每个候选计算相似度得分
         scored = []
         for cand in all_candidates:
-            score = self.analyzer.compute_similarity_score(cand, features)
+            score = self.analyzer.compute_similarity_score(
+                cand, features, weights=weights
+            )
             scored.append((cand, score))
 
         # 按得分降序排列

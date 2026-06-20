@@ -175,30 +175,43 @@ class DaletouAnalyzer:
     # ═══════════════════════════════════════════════
 
     def compute_similarity_score(self, candidate: Dict,
-                                 features: Dict) -> float:
+                                 features: Dict,
+                                 weights: Optional[Dict] = None) -> float:
         """
         计算候选号码与历史数据特征的相似度得分
         得分越高，越"像"真实开奖号码
 
         candidate: {"front": [1,5,12,23,35], "back": [3,8]}
         features: 由 build_features 生成的历史特征
+        weights: 各维度权重字典（可选，默认使用内置权重）
         Returns: 0~1 之间的相似度得分
         """
+        # 默认权重（与 calibration 模块中的 default_weights 保持一致）
+        if weights is None:
+            weights = {
+                "front_sum": 0.25,
+                "odd_even": 0.15,
+                "zone":      0.20,
+                "span":      0.15,
+                "consecutive": 0.10,
+                "back_sum":  0.10,
+                "frequency":  0.05,
+            }
+
         score = 0.0
         total_weight = 0.0
 
-        # ① 和值相似度 (权重0.25)
-        w = 0.25
+        # ① 和值相似度
+        w = weights.get("front_sum", 0.25)
         total_weight += w
         cand_front_sum = sum(candidate["front"])
         fs = features["front_sum"]
-        # 用正态CDF计算相似度
         if fs["std"] > 0:
             z = abs(cand_front_sum - fs["mean"]) / fs["std"]
-            score += w * max(0, 1 - z / 3)  # 3σ以外得0分
+            score += w * max(0, 1 - z / 3)
 
-        # ② 奇偶比相似度 (权重0.15)
-        w = 0.15
+        # ② 奇偶比相似度
+        w = weights.get("odd_even", 0.15)
         total_weight += w
         f_odd = sum(1 for n in candidate["front"] if n % 2 == 1)
         f_pattern = (f_odd, 5 - f_odd)
@@ -206,8 +219,8 @@ class DaletouAnalyzer:
             freq = features["front_odd_even"][f_pattern]
             score += w * (freq / features["total_draws"])
 
-        # ③ 区间分布相似度 (权重0.20)
-        w = 0.20
+        # ③ 区间分布相似度
+        w = weights.get("zone", 0.20)
         total_weight += w
         fz = [0, 0, 0]
         for n in candidate["front"]:
@@ -219,17 +232,17 @@ class DaletouAnalyzer:
             freq = features["front_zone"][fz_tuple]
             score += w * (freq / features["total_draws"])
 
-        # ④ 跨度相似度 (权重0.15)
-        w = 0.15
+        # ④ 跨度相似度
+        w = weights.get("span", 0.15)
         total_weight += w
         cand_front_span = max(candidate["front"]) - min(candidate["front"])
         expected_span = features["front_span_avg"]
         span_diff = abs(cand_front_span - expected_span)
-        max_span = self.front_range - 1  # 34
+        max_span = self.front_range - 1
         score += w * max(0, 1 - span_diff / max_span)
 
-        # ⑤ 连号特征相似度 (权重0.10)
-        w = 0.10
+        # ⑤ 连号特征相似度
+        w = weights.get("consecutive", 0.10)
         total_weight += w
         f_groups = self._count_consecutive_groups(sorted(candidate["front"]))
         num_groups = len(f_groups)
@@ -237,8 +250,8 @@ class DaletouAnalyzer:
             freq = features["front_consecutive"][num_groups]
             score += w * (freq / features["total_draws"])
 
-        # ⑥ 后区和值 (权重0.10)
-        w = 0.10
+        # ⑥ 后区和值
+        w = weights.get("back_sum", 0.10)
         total_weight += w
         cand_back_sum = sum(candidate["back"])
         bs = features["back_sum"]
@@ -246,14 +259,12 @@ class DaletouAnalyzer:
             z = abs(cand_back_sum - bs["mean"]) / bs["std"]
             score += w * max(0, 1 - z / 2)
 
-        # ⑦ 号码频率偏离度 (权重0.05) —— 不要太热也不要太冷
-        w = 0.05
+        # ⑦ 号码频率偏离度
+        w = weights.get("frequency", 0.05)
         total_weight += w
         ff = features["front_freq"]
         avg_ff = features["front_avg_freq"]
-        # 计算候选号码的平均历史频率
         cand_avg_freq = sum(ff[n-1] for n in candidate["front"]) / 5
-        # 距离平均频率越近越好
         freq_diff = abs(cand_avg_freq - avg_ff) / avg_ff if avg_ff > 0 else 1
         score += w * max(0, 1 - freq_diff)
 

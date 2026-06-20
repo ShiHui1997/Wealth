@@ -2,12 +2,15 @@
 """
 大乐透预测系统 - 主入口
 用法：
-  python main.py init       初始化数据库（首次运行）
-  python main.py fetch     获取最新一期数据
-  python main.py fetch-all 批量获取历史数据（50期/批，直到第一期）
-  python main.py analyze   分析历史数据并打印统计特征
-  python main.py predict   生成并推送本期预测（推送到PushPlus）
-  python main.py run-once  完整运行一次：获取最新 + 预测 + 推送
+  python main.py init          初始化数据库
+  python main.py fetch        获取最新一期开奖数据
+  python main.py fetch-all   批量获取历史数据（50期/批，直到第一期）
+  python main.py verify       验证最新一期预测 vs 真实开奖
+  python main.py verify --issue 2024001   验证指定期号
+  python main.py calibrate    根据验证结果校准权重
+  python main.py stats       显示预测效果统计
+  python main.py predict [--no-push]  生成并推送本期预测
+  python main.py run         完整运行一次：获取+验证+校准+预测+推送
 """
 import sys
 import os
@@ -15,25 +18,28 @@ import argparse
 from datetime import datetime
 import yaml
 
-# 将项目根目录加入sys.path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from src.data.storage import LotteryStorage
 from src.data.fetcher import DaletouFetcher
 from src.analysis.analyzer import DaletouAnalyzer
+from src.analysis.regression import BatchRegressionAnalyzer
+from src.analysis.calibration import SelfCalibrator
 from src.prediction.predictor import DaletouPredictor
 from src.notification.pushplus import PushPlusNotifier
 
 
 def load_config():
-    """加载配置文件"""
     config_path = os.path.join(os.path.dirname(__file__), "config", "config.yaml")
     with open(config_path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 
+# ═══════════════════════════════════════════════
+# 命令实现
+# ═══════════════════════════════════════════════
+
 def cmd_init(args, config):
-    """初始化数据库"""
     db_path = config["database"]["path"]
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
     storage = LotteryStorage(db_path)
@@ -42,24 +48,20 @@ def cmd_init(args, config):
 
 
 def cmd_fetch(args, config):
-    """获取最新一期数据"""
     storage = LotteryStorage(config["database"]["path"])
     fetcher = DaletouFetcher(
         batch_size=config["data_source"]["batch_size"],
         delay=config["data_source"]["request_delay"],
     )
-
     print("[获取最新] 开始...")
     latest = fetcher.fetch_latest()
     if not latest:
-        print("[获取最新] 无法获取最新数据，请检查网络连接")
+        print("[获取最新] 无法获取最新数据，请检查网络")
         return
 
     saved = storage.save_draw(
-        latest["issue"],
-        latest["draw_date"],
-        latest["front"],
-        latest["back"]
+        latest["issue"], latest["draw_date"],
+        latest["front"], latest["back"]
     )
     if saved:
         print(f"[获取最新] 成功保存 第{latest['issue']}期: "
@@ -67,49 +69,133 @@ def cmd_fetch(args, config):
     else:
         print(f"[获取最新] 第{latest['issue']}期已存在，跳过")
 
+    # 获取后自动验证
+    _auto_verify(storage, latest["issue"])
+
 
 def cmd_fetch_all(args, config):
-    """批量获取历史数据，50期/批，直到第一期"""
+    """批量获取历史数据，每50期做一批次回归分析"""
     storage = LotteryStorage(config["database"]["path"])
     fetcher = DaletouFetcher(
         batch_size=config["data_source"]["batch_size"],
         delay=config["data_source"]["request_delay"],
     )
-
-    def on_progress(batch, new_count, total_new):
-        print(f"  批次{batch}: +{new_count}期，累计+{total_new}期")
-
-    total = fetcher.fetch_all_history(storage, on_progress)
-    print(f"\n[全量获取] 完成！数据库现有 {storage.count()} 期")
-
-
-def cmd_analyze(args, config):
-    """分析历史数据"""
-    storage = LotteryStorage(config["database"]["path"])
-    draws = storage.get_all_draws()
-
-    if not draws:
-        print("[分析] 数据库无数据，请先运行 fetch-all")
-        return
-
-    print(f"[分析] 共 {len(draws)} 期数据")
     analyzer = DaletouAnalyzer()
-    features = analyzer.build_features(draws)
+    regression_analyzer = BatchRegressionAnalyzer(analyzer)
 
-    # 打印更多分析结论
-    print("\n=== 前区号码频率Top10（热号）===")
-    ff = features["front_freq"]
-    top10 = sorted(enumerate(ff, 1), key=lambda x: -x[1])[:10]
-    for num, cnt in top10:
-        print(f"  号码{num:02d}: {cnt}次")
+    print("[全量获取] 开始...")
+    existing = storage.count()
+    print(f"[全量获取] 当前数据库: {existing} 期")
 
-    print("\n=== 前区奇偶比分布 ===")
-    for pattern, cnt in sorted(features["front_odd_even"].items()):
-        print(f"  奇{patern[0]}/偶{patern[1]}: {cnt}次 ({cnt/features['total_draws']*100:.1f}%)")
+    batch_no = 0
+    total_new = 0
 
-    print("\n=== 前区区间分布（1-12/13-24/25-35）===")
-    for zone, cnt in sorted(features["front_zone"].items()):
-        print(f"  {zone}: {cnt}次")
+    while True:
+        batch_no += 1
+        print(f"\n[全量获取] 第{batch_no}批（每批{config['data_source']['batch_size']}期）")
+
+        batch_data = fetcher.fetch_history_batch(batch_no)
+        if not batch_data:
+            print("[全量获取] 无更多数据，停止")
+            break
+
+        # 保存本批数据
+        new_count = storage.save_draws_batch(batch_data)
+        total_new += new_count
+        print(f"[全量获取] 本批新增 {new_count} 期，累计新增 {total_new} 期")
+
+        # ── 批次回归分析 ──
+        if storage.count() >= config["data_source"]["batch_size"]:
+            all_draws = storage.get_all_draws()
+            # 本批数据（最近 batch_size 期）
+            batch_draws = all_draws[-config["data_source"]["batch_size"]:]
+            # 全局数据（不含本批）
+            global_draws = all_draws[:-config["data_source"]["batch_size"]] if len(all_draws) > len(batch_draws) else all_draws
+
+            if len(global_draws) >= 50:
+                report = regression_analyzer.analyze_batch(batch_draws, global_draws)
+                storage.save_batch_analysis(
+                    batch_no,
+                    batch_draws[0]["issue"],
+                    batch_draws[-1]["issue"],
+                    report["diffs"],
+                    report["notes"]
+                )
+                print(f"[批次回归] 第{batch_no}批分析已保存")
+
+        if new_count == 0:
+            print("[全量获取] 已无新数据")
+            break
+
+        # 检查是否到第一期
+        first = storage.get_first_issue()
+        if first and (first.endswith("001") or first == "07001" or len(first) <= 5):
+            print(f"[全量获取] 已获取到第一期: {first}")
+            break
+
+        import time
+        time.sleep(config["data_source"]["request_delay"])
+
+    print(f"\n[全量获取] 完成！共新增 {total_new} 期，现有 {storage.count()} 期")
+
+
+def cmd_verify(args, config):
+    """验证预测 vs 真实开奖"""
+    storage = LotteryStorage(config["database"]["path"])
+
+    if args.issue:
+        result = storage.verify_prediction(args.issue)
+    else:
+        result = storage.verify_latest()
+
+    if result:
+        # 验证后尝试校准
+        stats = storage.get_verification_stats()
+        if stats["total_verified"] >= 5:
+            print("\n[验证] 已验证 >= 5 期，建议运行校准: python main.py calibrate")
+    else:
+        print("\n[验证] 暂无预测或开奖数据可验证")
+
+
+def cmd_calibrate(args, config):
+    """执行自我校准"""
+    storage = LotteryStorage(config["database"]["path"])
+    calibrator = SelfCalibrator(storage)
+    calibrator.calibrate(force=args.force)
+    calibrator.print_calibration_status()
+
+
+def cmd_stats(args, config):
+    """显示预测效果统计"""
+    storage = LotteryStorage(config["database"]["path"])
+    stats = storage.get_verification_stats()
+    calibrator = SelfCalibrator(storage)
+
+    print(f"\n{'='*50}")
+    print(f"  大乐透预测系统 - 效果统计")
+    print(f"{'='*50}")
+    print(f"  已验证期数: {stats['total_verified']}")
+
+    if stats["total_verified"] > 0:
+        print(f"\n  前区命中分布:")
+        for k in sorted(stats.get("front_match_dist", {}).keys()):
+            v = stats["front_match_dist"][k]
+            rate = v / stats["total_verified"] * 100
+            bar = "█" * int(rate / 2)
+            print(f"    命中 {k} 个: {v:3d} 期 ({rate:5.1f}%) {bar}")
+
+        print(f"\n  后区命中分布:")
+        for k in sorted(stats.get("back_match_dist", {}).keys()):
+            v = stats["back_match_dist"][k]
+            rate = v / stats["total_verified"] * 100
+            bar = "█" * int(rate / 2)
+            print(f"    命中 {k} 个: {v:3d} 期 ({rate:5.1f}%) {bar}")
+
+        print(f"\n  前区命中>=3 比例: {stats.get('any_front_3plus_rate', 0)*100:.1f}%")
+        print(f"  后区命中>=1 比例: {stats.get('any_back_1plus_rate', 0)*100:.1f}%")
+
+    print(f"\n{'='*50}")
+    calibrator.print_calibration_status()
 
 
 def cmd_predict(args, config):
@@ -125,63 +211,104 @@ def cmd_predict(args, config):
     top_n = config["prediction"]["recommend_count"]
     candidates_count = config["prediction"]["candidate_count"]
 
-    prediction = predictor.predict(draws, top_n=top_n, candidates_count=candidates_count)
+    prediction = predictor.predict(
+        draws,
+        top_n=top_n,
+        candidates_count=candidates_count,
+        storage=storage,  # 传入storage以加载校准权重
+    )
 
     # 打印结果
     print("\n" + predictor.format_prediction(prediction))
 
-    # 推送到PushPlus
-    notifier = PushPlusNotifier(config["pushplus"]["token"])
-    html_content = predictor.format_prediction_html(prediction)
+    # 保存预测记录到数据库
     latest_issue = storage.get_latest_issue()
-    next_issue = _calc_next_issue(latest_issue) if latest_issue else ""
-    notifier.send_prediction(html_content, next_issue)
+    next_issue = _calc_next_issue(latest_issue) if latest_issue else "未知"
+    storage.save_prediction(next_issue, prediction)
 
-    # 保存预测记录
-    _save_prediction_log(prediction, next_issue)
+    # 推送到PushPlus
+    if not args.no_push:
+        notifier = PushPlusNotifier(config["pushplus"]["token"])
+        html_content = predictor.format_prediction_html(prediction)
+        notifier.send_prediction(html_content, next_issue)
+    else:
+        print("[预测] --no-push 已指定，跳过推送")
 
+
+def cmd_run(args, config):
+    """完整运行一次：获取最新开奖 + 验证上期预测 + 校准 + 预测下期 + 推送"""
+    storage = LotteryStorage(config["database"]["path"])
+
+    print(f"\n{'='*50}")
+    print(f"[完整运行] {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"{'='*50}")
+
+    # 第一步：获取最新开奖
+    print("\n[步骤1/4] 获取最新开奖数据...")
+    cmd_fetch(args, config)
+
+    # 第二步：验证上期预测
+    print("\n[步骤2/4] 验证上期预测...")
+    storage_r = LotteryStorage(config["database"]["path"])
+    cmd_verify(argparse.Namespace(issue=None), config)
+
+    # 第三步：校准（如果数据足够）
+    stats = storage_r.get_verification_stats()
+    if stats["total_verified"] >= 5:
+        print("\n[步骤3/4] 执行自我校准...")
+        cmd_calibrate(argparse.Namespace(force=False), config)
+    else:
+        print(f"\n[步骤3/4] 跳过校准（已验证{stats['total_verified']}期，需要>=5期）")
+
+    # 第四步：预测下期并推送
+    print("\n[步骤4/4] 生成并推送下期预测...")
+    cmd_predict(args, config)
+
+    print(f"\n{'='*50}")
+    print(f"[完整运行] 完成！")
+    print(f"{'='*50}\n")
+
+
+# ═══════════════════════════════════════════════
+# 工具函数
+# ═══════════════════════════════════════════════
 
 def _calc_next_issue(current_issue: str) -> str:
-    """计算下一期期号（简单实现）"""
+    """计算下一期期号"""
     try:
         year = int(current_issue[:4])
         seq = int(current_issue[4:])
-        if seq >= 365 // 2:  # 一年约170期（每周3期）
+        if seq >= 170:  # 一年约170期（每周3期）
             return f"{year+1}001"
         return f"{year}{seq+1:03d}"
     except Exception:
         return current_issue
 
 
-def _save_prediction_log(prediction, issue: str):
-    """保存预测记录到日志文件"""
-    log_dir = os.path.join(os.path.dirname(__file__), "logs")
-    os.makedirs(log_dir, exist_ok=True)
-    log_file = os.path.join(log_dir, "predictions.log")
-
-    with open(log_file, "a", encoding="utf-8") as f:
-        f.write(f"\n=== {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} 预测 ===\n")
-        for i, (nums, score) in enumerate(prediction, 1):
-            f.write(f"第{i}注: 前区{nums['front']} 后区{nums['back']} (相似度:{score:.4f})\n")
-
-
-def cmd_run_once(args, config):
-    """完整运行一次：获取最新 + 预测 + 推送"""
-    print(f"[完整运行] {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    cmd_fetch(args, config)
-    cmd_predict(args, config)
+def _auto_verify(storage, issue: str):
+    """获取开奖后自动验证（如果有该期预测记录）"""
+    preds = storage.get_predictions_by_issue(issue)
+    if preds:
+        print(f"[自动验证] 发现第{issue}期预测记录，自动验证...")
+        storage.verify_prediction(issue)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="大乐透预测系统")
+    parser = argparse.ArgumentParser(description="大乐透智能预测系统")
     subparsers = parser.add_subparsers(dest="command")
 
     subparsers.add_parser("init", help="初始化数据库")
-    subparsers.add_parser("fetch", help="获取最新一期")
-    subparsers.add_parser("fetch-all", help="批量获取所有历史数据")
-    subparsers.add_parser("analyze", help="分析历史数据")
-    subparsers.add_parser("predict", help="生成并推送预测")
-    subparsers.add_parser("run-once", help="完整运行一次（获取+预测+推送）")
+
+    p_fetch = subparsers.add_parser("fetch", help="获取最新一期开奖")
+    p_verify = subparsers.add_parser("verify", help="验证预测 vs 真实开奖")
+    p_verify.add_argument("--issue", type=str, default=None, help="指定期号")
+    p_calibrate = subparsers.add_parser("calibrate", help="执行自我校准")
+    p_calibrate.add_argument("--force", action="store_true", help="强制执行（即使数据不足）")
+    subparsers.add_parser("stats", help="显示预测效果统计")
+    p_predict = subparsers.add_parser("predict", help="生成并推送预测")
+    p_predict.add_argument("--no-push", action="store_true", help="不推送到PushPlus")
+    subparsers.add_parser("fetch-all", help="批量获取所有历史数据（含批次回归分析）")
+    subparsers.add_parser("run", help="完整运行一次（获取+验证+校准+预测+推送）")
 
     args = parser.parse_args()
     if not args.command:
@@ -193,9 +320,11 @@ def main():
         "init": cmd_init,
         "fetch": cmd_fetch,
         "fetch-all": cmd_fetch_all,
-        "analyze": cmd_analyze,
+        "verify": cmd_verify,
+        "calibrate": cmd_calibrate,
+        "stats": cmd_stats,
         "predict": cmd_predict,
-        "run-once": cmd_run_once,
+        "run": cmd_run,
     }
     commands[args.command](args, config)
 
