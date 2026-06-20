@@ -83,7 +83,7 @@ class LotteryStorage:
                     batch_end    TEXT NOT NULL,       -- 这批结束期号
                     analyzed_at  TEXT NOT NULL,       -- 分析时间
                     feature_diff TEXT NOT NULL,       -- 这批特征 vs 全局特征差异 JSON
-                    reggression_notes TEXT           -- 回归分析结论（文本）
+                    regression_notes TEXT           # 回归分析结论（文本）
                 )
             """)
 
