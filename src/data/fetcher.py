@@ -7,10 +7,6 @@ import time
 import re
 import json
 from typing import List, Dict, Optional
-from bs4 import BeautifulSoup
-
-# 大乐透自2007年开始发行，期号格式：年份+3位序号，如2007001
-# 前区：01-35选5，后区：01-12选2
 
 
 class DaletouFetcher:
@@ -19,14 +15,41 @@ class DaletouFetcher:
     def __init__(self, batch_size: int = 50, delay: float = 1.0):
         self.batch_size = batch_size
         self.delay = delay
+
+        # 自动检测代理（用户环境有 1080 端口代理）
+        proxies = None
+        try:
+            # 快速检测本地是否有可用代理
+            test_proxies = [
+                {"http": "http://127.0.0.1:1080", "https": "http://127.0.0.1:1080"},
+                {"http": "http://127.0.0.1:7890", "https": "http://127.0.0.1:7890"},
+                {"http": "socks5://127.0.0.1:10808", "https": "socks5://127.0.0.1:10808"},
+            ]
+            for p in test_proxies:
+                try:
+                    r = requests.get("https://www.baidu.com",
+                                     proxies=p, timeout=3)
+                    if r.status_code == 200:
+                        proxies = p
+                        print(f"[网络] 使用代理: {p['https']}")
+                        break
+                except Exception:
+                    continue
+            if not proxies:
+                print("[网络] 未检测到可用代理，直连")
+        except Exception as e:
+            print(f"[网络] 代理检测跳过: {e}")
+
         self.session = requests.Session()
+        if proxies:
+            self.session.proxies.update(proxies)
         self.session.headers.update({
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
                 "Chrome/120.0.0.0 Safari/537.36"
             ),
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept": "*/*",
             "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
             "Connection": "keep-alive",
         })
@@ -40,267 +63,244 @@ class DaletouFetcher:
     def fetch_latest(self) -> Optional[Dict]:
         """获取最新一期开奖数据"""
         print("[获取最新] 正在获取...")
-        # 先尝试500彩票网首页
-        result = self._fetch_latest_500()
+        result = self._fetch_latest_500api()
         if result:
             return result
-        # 再尝试搜狐彩票
-        result = self._fetch_latest_souhu()
+        result = self._fetch_latest_500page()
         return result
 
     def fetch_history_batch(self, batch_num: int) -> List[Dict]:
         """
         获取一批历史数据
         batch_num: 第几批（从1开始）
-        策略：从最新往历史方向获取
-        Returns: 开奖数据列表（按日期升序）
+        Returns: 开奖数据列表
         """
         print(f"[批量获取] 第{batch_num}批...")
 
-        # 策略1：从500彩票网历史页面获取
-        results = self._fetch_batch_500_desc(batch_num)
-        if results:
-            # 去重
-            unique = []
-            for r in results:
-                if r["issue"] not in self.fetched_issues:
-                    self.fetched_issues.add(r["issue"])
-                    unique.append(r)
-            print(f"[批量获取] 500彩票网获取到 {len(unique)} 条（去重后）")
-            return unique
-
-        # 策略2：从官方网站获取
-        results = self._fetch_batch_official(batch_num)
+        # 策略1：500彩票网API（最可靠）
+        results = self._fetch_500_api(batch_num)
         if results:
             unique = []
             for r in results:
                 if r["issue"] not in self.fetched_issues:
                     self.fetched_issues.add(r["issue"])
                     unique.append(r)
-            print(f"[批量获取] 官方API获取到 {len(unique)} 条")
+            print(f"[批量获取] 获取到 {len(unique)} 条（去重后）")
             return unique
 
-        print("[批量获取] 本批无数据（可能已到第一期）")
+        # 策略2：500彩票网页面解析
+        results = self._fetch_500_page(batch_num)
+        if results:
+            unique = []
+            for r in results:
+                if r["issue"] not in self.fetched_issues:
+                    self.fetched_issues.add(r["issue"])
+                    unique.append(r)
+            print(f"[批量获取] 页面解析到 {len(unique)} 条")
+            return unique
+
+        print("[批量获取] 本批无数据（可能已到第一期或所有源都失败）")
         return []
 
     def set_fetched_issues(self, issues: set):
-        """从数据库加载已获取的期号（避免重复获取）"""
+        """从数据库加载已获取的期号"""
         self.fetched_issues = issues
 
     # ─────────────────────────────────────────
-    # 数据源：500彩票网（主要数据源）
+    # 数据源：500彩票网隐藏API（首选，返回JSON）
     # ─────────────────────────────────────────
 
-    def _fetch_latest_500(self) -> Optional[Dict]:
-        """从500彩票网获取最新一期"""
-        try:
-            url = "https://kaijiang.500.com/dlt.shtml"
-            resp = self.session.get(url, timeout=15)
-            resp.encoding = "gb2312"
-            soup = BeautifulSoup(resp.text, "html.parser")
-
-            # 找最新开奖信息
-            # 500彩票网的结构：最新开奖在页面上方
-            # 用多种方式尝试解析
-            issue = None
-            front = []
-            back = []
-
-            # 方式1：找 class 包含 ball 的标签
-            ball_ems = soup.find_all("em")
-            if len(ball_ems) >= 7:
-                # 前5个是前区，后2个是后区
-                nums = [int(e.text.strip()) for e in ball_ems[:7]]
-                front = nums[:5]
-                back = nums[5:7]
-                # 找期号
-                issue_tag = soup.find("font", class_=re.compile("cfont"))
-                if issue_tag:
-                    issue = issue_tag.text.strip()
-
-            if issue and len(front) == 5 and len(back) == 2:
-                return {
-                    "issue": issue,
-                    "draw_date": "",
-                    "front": sorted(front),
-                    "back": sorted(back),
-                }
-        except Exception as e:
-            print(f"[500彩票-最新] 获取失败: {e}")
-        return None
-
-    def _fetch_batch_500_desc(self, batch_num: int) -> List[Dict]:
+    def _fetch_500_api(self, batch_num: int) -> List[Dict]:
         """
-        从500彩票网按页获取历史数据
-        500彩票网大乐透历史页面支持分页
-        URL格式：https://kaijiang.500.com/dlt.shtml?page=2
+        使用500彩票网的隐藏数据接口
+        URL: https://datachart.500.com/dlt/history/newinc/outdata.php
+        这个接口直接返回CSV格式的开奖数据
         """
         results = []
         try:
-            # 计算页码（每页大约50条）
-            page = batch_num
+            # 500彩票网的隐藏API
+            url = "https://datachart.500.com/dlt/history/newinc/outdata.php"
+            params = {
+                "start": str((batch_num - 1) * self.batch_size + 1),
+                "end": str(batch_num * self.batch_size),
+            }
+            resp = self.session.get(url, params=params, timeout=15)
+            resp.encoding = "utf-8"
 
-            url = f"https://kaijiang.500.com/dlt.shtml"
-            if page > 1:
-                url += f"?page={page}"
+            if resp.status_code != 200 or len(resp.text.strip()) < 20:
+                print(f"[500API] 返回异常: status={resp.status_code}")
+                return []
 
-            resp = self.session.get(url, timeout=15)
-            resp.encoding = "gb2312"
-            soup = BeautifulSoup(resp.text, "html.parser")
+            lines = resp.text.strip().split("\n")
+            for line in lines:
+                parts = line.split(",")
+                if len(parts) < 8:
+                    continue
+                # 格式: 期号,前区号码(5个),后区号码(2个),奖金,...
+                issue = parts[0].strip().replace('"', '')
+                if not issue.isdigit() or len(issue) < 6:
+                    continue
 
-            # 找开奖表格
-            # 500彩票网的表格结构比较复杂，尝试多种方式
-            results = self._parse_500_table(soup)
-            if results:
-                return results
+                front = []
+                back = []
+                # 前区5个号码在中间位置
+                for i in range(1, 6):
+                    if i < len(parts):
+                        n = parts[i].strip().replace('"', '')
+                        if n.isdigit():
+                            num = int(n)
+                            if 1 <= num <= 35:
+                                front.append(num)
 
-            # 如果表格解析失败，尝试解析页面中的所有开奖条目
-            results = self._parse_500_items(soup)
+                # 后区2个号码
+                for i in range(6, 8):
+                    if i < len(parts):
+                        n = parts[i].strip().replace('"', '')
+                        if n.isdigit():
+                            num = int(n)
+                            if 1 <= num <= 12:
+                                back.append(num)
+
+                if len(front) == 5 and len(back) == 2 and issue:
+                    results.append({
+                        "issue": issue,
+                        "draw_date": "",
+                        "front": sorted(front),
+                        "back": sorted(back),
+                    })
+
+            print(f"[500API] 解析到 {len(results)} 条记录")
             return results
 
         except Exception as e:
-            print(f"[500彩票-批量] 获取失败: {e}")
+            print(f"[500API] 获取失败: {e}")
+
         return []
 
-    def _parse_500_table(self, soup: BeautifulSoup) -> List[Dict]:
-        """解析500彩票网的表格数据"""
-        results = []
-        tables = soup.find_all("table")
-        for table in tables:
-            rows = table.find_all("tr")
-            for row in rows[1:]:  # 跳过表头
-                cells = row.find_all(["td", "th"])
-                if len(cells) < 8:
-                    continue
-
-                # 尝试从cells中提取数据
-                issue = None
-                draw_date = ""
-                front = []
-                back = []
-
-                # 找期号（通常在第一列）
-                for cell in cells[:3]:
-                    text = cell.text.strip()
-                    if re.match(r"\d{7,8}", text):
-                        issue = text
-                        break
-
-                # 找号码球
-                ball_tags = row.find_all(["em", "span"])
-                nums = []
-                for tag in ball_tags:
-                    text = tag.text.strip()
-                    if re.match(r"\d{1,2}", text):
-                        num = int(text)
-                        if 1 <= num <= 35:
-                            nums.append(num)
-
-                if len(nums) >= 7:
-                    front = sorted(nums[:5])
-                    back = sorted(nums[5:7])
-                elif len(nums) == 5:
-                    # 只有前区，后区需要从其他地方找
-                    front = sorted(nums)
-                    # 尝试从remaining cells找后区
-                    for cell in cells:
-                        cell_nums = re.findall(r"\d{2}", cell.text)
-                        if len(cell_nums) >= 2:
-                            back = sorted([int(n) for n in cell_nums[:2]])
-                            break
-
-                if issue and len(front) == 5 and len(back) == 2:
-                    results.append({
-                        "issue": issue,
-                        "draw_date": draw_date,
-                        "front": front,
-                        "back": back,
-                    })
-
-        return results
-
-    def _parse_500_items(self, soup: BeautifulSoup) -> List[Dict]:
-        """解析页面中的开奖条目（非表格形式）"""
-        results = []
-        # 找所有包含期号和号码的块
-        items = soup.find_all(["div", "li"], class_=re.compile("ball|kj|item"))
-        for item in items:
-            text = item.text
-            issue_match = re.search(r"第?\s*(\d{7,8})\s*期?", text)
-            if not issue_match:
-                continue
-            issue = issue_match.group(1)
-            nums = re.findall(r"\b(\d{1,2})\b", text)
-            nums = [int(n) for n in nums if 1 <= int(n) <= 35]
-            if len(nums) >= 5:
-                results.append({
-                    "issue": issue,
-                    "draw_date": "",
-                    "front": sorted(nums[:5]),
-                    "back": sorted(nums[5:7]) if len(nums) >= 7 else [nums[5], nums[6]] if len(nums) >= 7 else [1, 2],
-                })
-        return results
-
-    def _fetch_latest_souhu(self) -> Optional[Dict]:
-        """从搜狐彩票获取最新开奖（备用数据源）"""
+    def _fetch_latest_500api(self) -> Optional[Dict]:
+        """从500彩票API获取最新一期"""
         try:
-            url = "https://caipiao.sogou.com/dlt.htm"
-            resp = self.session.get(url, timeout=10)
-            # 解析...
+            url = "https://datachart.500.com/dlt/history/newinc/outdata.php"
+            params = {"start": "1", "end": "1"}
+            resp = self.session.get(url, params=params, timeout=10)
+            resp.encoding = "utf-8"
+
+            lines = resp.text.strip().split("\n")
+            if lines:
+                parts = lines[0].split(",")
+                if len(parts) >= 8:
+                    issue = parts[0].strip().replace('"', '')
+                    front = sorted([int(p.strip()) for p in parts[1:6]
+                                    if p.strip().isdigit()])
+                    back = sorted([int(p.strip()) for p in parts[6:8]
+                                   if p.strip().isdigit()])
+                    if issue and len(front) == 5 and len(back) == 2:
+                        return {
+                            "issue": issue,
+                            "draw_date": "",
+                            "front": front,
+                            "back": back,
+                        }
         except Exception as e:
-            print(f"[搜狐彩票] 获取失败: {e}")
+            print(f"[500API-最新] 失败: {e}")
         return None
 
     # ─────────────────────────────────────────
-    # 数据源：中国体彩网官方（备用）
+    # 数据源：500彩票网页面解析（备用）
     # ─────────────────────────────────────────
 
-    def _fetch_batch_official(self, batch_num: int) -> List[Dict]:
-        """
-        从官方API获取历史数据
-        中国体彩网有部分公开的API接口
-        """
+    def _fetch_500_page(self, batch_num: int) -> List[Dict]:
+        """从500彩票网页面抓取历史数据"""
         results = []
         try:
-            # 尝试官方查询接口
-            # 注：官方接口可能需要cookie或token
-            url = "http://www.lottery.gov.cn/kjy/wqkjgg.do"
-            params = {
-                "ltype": "dlt",
-                "page": batch_num,
-                "rows": self.batch_size,
-            }
-            resp = self.session.get(url, params=params, timeout=10)
-            if resp.status_code == 200:
-                try:
-                    data = resp.json()
-                    return self._parse_official_json(data)
-                except Exception:
-                    pass
+            url = f"https://kaijiang.500.com/dlt.shtml"
+            if batch_num > 1:
+                url += f"?page={batch_num}"
+
+            resp = self.session.get(url, timeout=15)
+            resp.encoding = "gb2312"
+            text = resp.text
+
+            # 用正则提取开奖行
+            # 500彩票网页面中每行开奖数据包含期号和7个号码
+            # 模式匹配：期号 + 一串数字（含前后区号码）
+            rows = re.findall(
+                r'<tr[^>]*>.*?</tr>',
+                text,
+                re.DOTALL | re.IGNORECASE
+            )
+
+            for row in rows:
+                # 提取期号
+                issue_match = re.search(
+                    r'(\d{7})|第(\d{7})\s*期',
+                    row.replace("<br>", "").replace("\n", "")
+                )
+                issue = None
+                if issue_match:
+                    issue = issue_match.group(1) or issue_match.group(2)
+
+                # 提取所有数字（1~35是前区候选，1~12是后区候选）
+                nums = [int(n) for n in re.findall(r'>(\d{2})<', row)]
+                valid_nums = [n for n in nums if 1 <= n <= 35]
+
+                if issue and len(valid_nums) >= 7:
+                    # 前5个作为前区（可能需要过滤），后2个作为后区
+                    front = sorted(valid_nums[:5])
+                    # 后区号码应该在1~12之间
+                    remaining = [n for n in valid_nums[5:] if 1 <= n <= 12]
+                    if len(remaining) < 2:
+                        remaining = [n for n in nums if 1 <= n <= 12][:2]
+                    back = sorted(remaining[:2]) if remaining else [1, 2]
+
+                    if len(front) == 5 and len(back) == 2:
+                        results.append({
+                            "issue": issue,
+                            "draw_date": "",
+                            "front": front,
+                            "back": back,
+                        })
+
+            if results:
+                print(f"[500页面] 解析到 {len(results)} 条")
+
         except Exception as e:
-            print(f"[官方API] 获取失败: {e}")
+            print(f"[500页面] 获取失败: {e}")
+
         return results
 
-    def _parse_official_json(self, data: dict) -> List[Dict]:
-        """解析官方API返回的JSON"""
-        results = []
-        items = data.get("data", data.get("rows", []))
-        for item in items:
-            issue = str(item.get("issue", item.get("qihao", "")))
-            draw_date = item.get("date", item.get("riqi", ""))
-            front = [int(x) for x in item.get("front", item.get("qianqu", []))]
-            back = [int(x) for x in item.get("back", item.get("houqu", []))]
-            if len(front) == 5 and len(back) == 2:
-                results.append({
-                    "issue": issue,
-                    "draw_date": draw_date,
-                    "front": sorted(front),
-                    "back": sorted(back),
-                })
-        return results
+    def _fetch_latest_500page(self) -> Optional[Dict]:
+        """从500彩票网页面获取最新一期"""
+        try:
+            resp = self.session.get("https://kaijiang.500.com/dlt.shtml",
+                                   timeout=10)
+            resp.encoding = "gb2312"
+            text = resp.text
+
+            # 找第一个包含完整开奖数据的行
+            nums = [int(n) for n in re.findall(r'>(\d{2})<', text)]
+            valid_front = [n for n in nums[:7] if 1 <= n <= 35]
+            if len(valid_front) >= 5:
+                front = sorted(valid_front[:5])
+                remaining = [n for n in nums[5:12] if 1 <= n <= 12]
+                back = sorted(remaining[:2])
+
+                issue_match = re.search(r'(\d{7})', text[:2000])
+                issue = issue_match.group(1) if issue_match else ""
+
+                if issue and len(back) >= 2:
+                    return {
+                        "issue": issue,
+                        "draw_date": "",
+                        "front": front,
+                        "back": back,
+                    }
+        except Exception as e:
+            print(f"[500页面-最新] 失败: {e}")
+        return None
 
     # ─────────────────────────────────────────
-    # 本地种子数据（初次建库用）
+    # 本地种子数据
     # ─────────────────────────────────────────
 
     def load_local_seed(self, filepath: str) -> List[Dict]:
