@@ -193,12 +193,14 @@ def cmd_predict(args, config):
     predictor = DaletouPredictor()
     top_n = config["prediction"]["recommend_count"]
     candidates_count = config["prediction"]["candidate_count"]
+    random_seed = config["prediction"].get("random_seed", 42)
 
     prediction = predictor.predict(
         draws,
         top_n=top_n,
         candidates_count=candidates_count,
         storage=storage,  # 传入storage以加载校准权重
+        random_seed=random_seed,
     )
 
     # 打印结果

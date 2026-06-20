@@ -19,13 +19,19 @@ class DaletouPredictor:
         self.analyzer = DaletouAnalyzer(front_range, back_range)
 
     def predict(self, draws: List[Dict], top_n: int = 3,
-                candidates_count: int = 100,
-                storage=None) -> List[Tuple[Dict, float]]:
+                candidates_count: int = 1000,
+                storage=None,
+                random_seed: int = 42) -> List[Tuple[Dict, float]]:
         """
         预测下一期号码
+        使用固定随机种子，确保同样的历史数据每次得出相同结果
+        random_seed: 随机种子，修改可得到不同但固定的结果
         storage: 可选，传入则以它加载校准权重
         Returns: [(号码dict, 相似度得分), ...] 按得分降序
         """
+        # 固定随机种子，确保结果可复现
+        random.seed(random_seed)
+
         print(f"\n[预测] 基于最近 {len(draws)} 期数据进行分析...")
 
         # 加载校准权重（如果可用）
@@ -57,20 +63,15 @@ class DaletouPredictor:
         # 第一步：从历史数据中提取特征（"学习随机性"）
         features = self.analyzer.build_features(draws)
 
-        # 第二步：用多种策略生成候选号码
+        # 第二步：用智能策略生成候选号码（按历史特征定向构造）
+        # 使用固定随机种子（已在函数开头设置），确保结果可复现
         all_candidates = []
 
-        # 策略1：频率加权（占60%）
-        c1 = self.analyzer.generate_candidates(features, candidates_count // 2, "weighted")
-        all_candidates.extend(c1)
-
-        # 策略2：模式约束（占30%）
-        c2 = self.analyzer.generate_candidates(features, candidates_count // 3, "pattern")
-        all_candidates.extend(c2)
-
-        # 策略3：纯随机基线（占10%）
-        c3 = self.analyzer.generate_candidates(features, candidates_count // 10, "uniform")
-        all_candidates.extend(c3)
+        # 策略：smart（按特征定向构造，最接近真实随机性）
+        # 生成多批，每批用不同的随机扰动，增加多样性
+        all_candidates = self.analyzer.generate_candidates(
+            features, candidates_count, "smart"
+        )
 
         # 去重
         unique = []

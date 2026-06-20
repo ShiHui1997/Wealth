@@ -301,27 +301,27 @@ class DaletouAnalyzer:
     # 4. 生成候选号码（基于特征）
     # ═══════════════════════════════════════════════
 
-    def generate_candidates(self, features: Dict, count: int = 100,
-                           strategy: str = "weighted") -> List[Dict]:
+    def generate_candidates(self, features: Dict, count: int = 1000,
+                           strategy: str = "smart") -> List[Dict]:
         """
         基于历史特征生成候选号码
         strategy:
-          - "uniform": 纯随机（作为基线）
+          - "smart": 智能生成（按特征定向构造，非随机搜索）← 默认
           - "weighted": 按历史频率加权随机
           - "pattern": 按历史模式约束随机
+          - "uniform": 纯随机基线
         """
         candidates = []
         attempts = 0
-        max_attempts = count * 50  # 防止死循环
+        max_attempts = count * 50
 
         while len(candidates) < count and attempts < max_attempts:
             attempts += 1
             cand = self._generate_one(features, strategy)
-            # 去重
-            if cand not in candidates:
+            if cand and cand not in candidates:
                 candidates.append(cand)
 
-        print(f"[生成] 生成 {len(candidates)} 个候选（尝试{attempts}次）")
+        print(f"[生成] 生成 {len(candidates)} 个候选（尝试{attempts}次，策略={strategy}）")
         return candidates
 
     def _generate_one(self, features: Dict, strategy: str) -> Dict:
@@ -332,12 +332,146 @@ class DaletouAnalyzer:
         elif strategy == "weighted":
             front = self._weighted_sample(features, "front")
             back = self._weighted_sample(features, "back")
-        else:  # pattern
+        elif strategy == "pattern":
             front = self._pattern_sample(features)
-
             back = sorted(random.sample(range(1, self.back_range + 1), 2))
+        else:  # smart — 按特征定向构造
+            front = self._smart_front(features)
+            back = self._smart_back(features)
 
         return {"front": front, "back": back}
+
+    def _smart_front(self, features: Dict) -> List[int]:
+        """
+        智能生成前区5个号码：
+        按历史特征定向构造，使生成的号码在7维特征空间里接近历史分布
+        """
+        fs = features["front_sum"]
+        target_sum = int(fs["mean"])
+        span_avg = int(features["front_span_avg"])
+
+        # 决定奇偶比（按历史频率加权随机选一个）
+        fe = features["front_odd_even"]
+        fe_patterns = list(fe.keys())
+        fe_weights = [fe[p] for p in fe_patterns]
+        target_odd, target_even = random.choices(fe_patterns, weights=fe_weights)[0]
+
+        # 决定区间分布（按历史频率加权随机选一个）
+        fz = features["front_zone"]
+        fz_patterns = list(fz.keys())
+        fz_weights = [fz[p] for p in fz_patterns]
+        target_zone = random.choices(fz_patterns, weights=fz_weights)[0]
+
+        # 决定连号组数（按历史频率加权随机选一个）
+        fc = features["front_consecutive"]
+        fc_patterns = list(fc.keys())
+        fc_weights = [fc[p] for p in fc_patterns]
+        target_groups = random.choices(fc_patterns, weights=fc_weights)[0]
+
+        # 在约束下生成
+        front = []
+        # 按区间分布选号
+        for i, count_in_zone in enumerate(target_zone):
+            if count_in_zone == 0:
+                continue
+            if i == 0:
+                low, high = 1, 12
+            elif i == 1:
+                low, high = 13, 24
+            else:
+                low, high = 25, 35
+            pool = list(range(low, high + 1))
+            chosen = random.sample(pool, min(count_in_zone, len(pool)))
+            front.extend(chosen)
+
+        # 补足到5个
+        while len(front) < 5:
+            n = random.randint(1, 35)
+            if n not in front:
+                front.append(n)
+        front = sorted(front[:5])
+
+        # 调整奇偶比
+        cur_odd = sum(1 for n in front if n % 2 == 1)
+        attempts = 0
+        while cur_odd != target_odd and attempts < 200:
+            attempts += 1
+            if cur_odd < target_odd:
+                evens = [n for n in front if n % 2 == 0]
+                odds_avail = [n for n in range(1, 36) if n % 2 == 1 and n not in front]
+                if evens and odds_avail:
+                    front.remove(random.choice(evens))
+                    front.append(random.choice(odds_avail))
+                    cur_odd += 1
+            else:
+                odds = [n for n in front if n % 2 == 1]
+                evens_avail = [n for n in range(1, 36) if n % 2 == 0 and n not in front]
+                if odds and evens_avail:
+                    front.remove(random.choice(odds))
+                    front.append(random.choice(evens_avail))
+                    cur_odd -= 1
+            front = sorted(front)
+
+        # 调整和值（微调1-2个号）
+        cur_sum = sum(front)
+        attempts = 0
+        while abs(cur_sum - target_sum) > fs["std"] and attempts < 100:
+            attempts += 1
+            if cur_sum < target_sum:
+                # 换一个更大的号
+                smallest = min(front)
+                larger_avail = [n for n in range(smallest + 1, 36) if n not in front]
+                if larger_avail:
+                    front.remove(smallest)
+                    front.append(random.choice(larger_avail))
+                    front = sorted(front)
+                    cur_sum = sum(front)
+            else:
+                largest = max(front)
+                smaller_avail = [n for n in range(1, largest) if n not in front]
+                if smaller_avail:
+                    front.remove(largest)
+                    front.append(random.choice(smaller_avail))
+                    front = sorted(front)
+                    cur_sum = sum(front)
+
+        return sorted(front[:5])
+
+    def _smart_back(self, features: Dict) -> List[int]:
+        """智能生成后区2个号码"""
+        bs = features["back_sum"]
+        target_sum = int(bs["mean"])
+
+        # 按频率加权选
+        freq = features["back_freq"]
+        nums = list(range(1, self.back_range + 1))
+        weights = [f + 0.5 for f in freq]
+        chosen = []
+        pool = nums.copy()
+        pool_w = weights.copy()
+        for _ in range(2):
+            idx = random.choices(range(len(pool)), weights=pool_w)[0]
+            chosen.append(pool[idx])
+            pool.pop(idx)
+            pool_w.pop(idx)
+
+        # 微调和值
+        cur_sum = sum(chosen)
+        if abs(cur_sum - target_sum) > bs["std"]:
+            if cur_sum < target_sum:
+                smallest = min(chosen)
+                larger = [n for n in range(smallest + 1, 13) if n not in chosen]
+                if larger:
+                    chosen.remove(smallest)
+                    chosen.append(random.choice(larger))
+            else:
+                largest = max(chosen)
+                smaller = [n for n in range(1, largest) if n not in chosen]
+                if smaller:
+                    chosen.remove(largest)
+                    chosen.append(random.choice(smaller))
+
+        return sorted(chosen)
 
     def _weighted_sample(self, features: Dict, area: str) -> List[int]:
         """按历史频率加权随机抽样"""

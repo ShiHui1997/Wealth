@@ -24,8 +24,10 @@ data_source:
 prediction:
   # 推荐注数
   recommend_count: 3
-  # 生成候选注数 (用于筛选最相似的)
-  candidate_count: 100
+  # 生成候选注数 (用于筛选最相似的，建议 >= 1000 以保证覆盖度)
+  candidate_count: 2000
+  # 随机种子（确保结果可复现，修改此值可得到不同但固定的结果）
+  random_seed: 42
   # 前区号码范围
   front_min: 1
   front_max: 35
