@@ -6,6 +6,10 @@ on:
     types: [opened]
   workflow_dispatch:  # 也支持手动触发（用于测试）
 
+permissions:
+  contents: write
+  issues: write
+
 jobs:
   process-submission:
     runs-on: ubuntu-latest
