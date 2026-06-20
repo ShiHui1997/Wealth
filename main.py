@@ -268,15 +268,34 @@ def cmd_run(args, config):
 # ═══════════════════════════════════════════════
 
 def _calc_next_issue(current_issue: str) -> str:
-    """计算下一期期号"""
+    """计算下一期期号（大乐透格式: YYNNN，如 07001=2007年第1期）"""
     try:
-        year = int(current_issue[:4])
-        seq = int(current_issue[4:])
-        if seq >= 170:  # 一年约170期（每周3期）
-            return f"{year+1}001"
-        return f"{year}{seq+1:03d}"
+        # 标准化期号：去掉前导的完整年份前缀（如 "2007001" → "07001"）
+        issue_str = str(current_issue).strip()
+        if len(issue_str) == 7 and issue_str[0:4].isdigit():
+            # 完整年份格式 "2007001" → 取后5位 "07001"
+            issue_str = issue_str[2:]  # "07001"
+
+        # 大乐透标准格式: 前两位为年份后缀，后3位为期序号
+        if len(issue_str) >= 5:
+            year_suffix = int(issue_str[:2])   # 如 26
+            seq = int(issue_str[2:])            # 如 067
+        else:
+            # 兜底：尝试按4位年份解析
+            year_suffix = int(str(int(issue_str)) // 1000)
+            seq = int(str(int(issue_str)) % 1000)
+
+        max_per_year = 170  # 一年约170期（每周一/三/六）
+        if seq >= max_per_year:
+            return f"{(year_suffix % 99) + 1:02d}001"
+        return f"{year_suffix:02d}{seq + 1:03d}"
     except Exception:
-        return current_issue
+        # 兜底：直接数字+1
+        try:
+            n = int(current_issue)
+            return str(n + 1)
+        except Exception:
+            return current_issue
 
 
 def _auto_verify(storage, issue: str):

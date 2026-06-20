@@ -115,53 +115,55 @@ class DaletouPredictor:
 
     def format_prediction_html(self, prediction: List[Tuple[Dict, float]],
                                 submit_url: str = "") -> str:
-        """格式化为HTML（适合PushPlus推送）"""
+        """格式化为HTML（适合PushPlus推送，手机端优化）"""
         rows = ""
         for i, (nums, score) in enumerate(prediction, 1):
             front_str = " ".join(f"{n:02d}" for n in nums["front"])
             back_str = " ".join(f"{n:02d}" for n in nums["back"])
             rows += f"""
             <tr>
-                <td style="padding:8px 15px;">第{i}注</td>
-                <td style="padding:8px 15px;font-weight:bold;color:#e74c3c;">{front_str}</td>
-                <td style="padding:8px 15px;font-weight:bold;color:#3498db;">{back_str}</td>
-                <td style="padding:8px 15px;color:#888;">{score:.4f}</td>
+                <td style="padding:10px 12px;white-space:nowrap;font-size:14px;">第{i}注</td>
+                <td style="padding:10px 12px;white-space:nowrap;font-weight:bold;color:#e74c3c;font-size:15px;letter-spacing:1px;">{front_str}</td>
+                <td style="padding:10px 12px;white-space:nowrap;font-weight:bold;color:#3498db;font-size:15px;letter-spacing:1px;">{back_str}</td>
+                <td style="padding:10px 12px;white-space:nowrap;color:#888;font-size:13px;">{score:.2f}</td>
             </tr>"""
 
         # 底部附加：开奖数据更新链接
         submit_section = ""
         if submit_url:
             submit_section = f"""
-            <div style="margin-top:24px;padding:16px;background:#f0f7ff;border-radius:12px;border-left:4px solid #3498db;">
-                <p style="margin:0 0 10px 0;font-size:14px;color:#2c3e50;font-weight:bold;">
+            <div style="margin-top:20px;padding:14px;background:#f0f7ff;border-radius:10px;border-left:4px solid #3498db;">
+                <p style="margin:0 0 8px 0;font-size:14px;color:#2c3e50;font-weight:bold;">
                     📝 开奖后请更新数据
                 </p>
-                <p style="margin:0;font-size:13px;color:#666;">
-                    已知最新开奖号码？点击下方链接填写，系统将自动更新并重新预测 👇
+                <p style="margin:0;font-size:12px;color:#666;line-height:1.5;">
+                    已知最新开奖号码？点击填写，系统将自动更新并重新预测 👇
                 </p>
                 <a href="{submit_url}" target="_blank"
-                   style="display:inline-block;margin-top:12px;padding:12px 28px;
+                   style="display:inline-block;margin-top:10px;padding:11px 24px;
                           background:linear-gradient(135deg,#3498db,#2980b9);
                           color:#fff;border-radius:8px;text-decoration:none;
-                          font-weight:bold;font-size:15px;">
+                          font-weight:bold;font-size:14px;white-space:nowrap;">
                     ✏️ 提交最新开奖号码
                 </a>
             </div>"""
 
         return f"""
-        <div style="font-family:雅黑,sans-serif;padding:20px;">
-            <h2 style="color:#2c3e50;">🎯 大乐透本期预测</h2>
-            <p style="color:#888;">基于历史开奖数据的相似度分析，以下3注与真实开奖随机性最为接近：</p>
-            <table style="border-collapse:collapse;margin-top:15px;width:100%;">
+        <div style="font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;padding:16px;max-width:100%;overflow-x:auto;">
+            <h2 style="color:#2c3e50;font-size:18px;margin-bottom:4px;">🎯 大乐透本期预测</h2>
+            <p style="color:#888;font-size:13px;margin-bottom:14px;">
+                基于历史开奖数据的相似度分析，以下3注与真实开奖随机性最为接近：
+            </p>
+            <table style="border-collapse:collapse;margin-top:12px;width:100%;min-width:340px;">
                 <tr style="background:#f5f6fa;">
-                    <th style="padding:8px 15px;">序号</th>
-                    <th style="padding:8px 15px;">前区(5个)</th>
-                    <th style="padding:8px 15px;">后区(2个)</th>
-                    <th style="padding:8px 15px;">相似度</th>
+                    <th style="padding:8px 12px;font-size:13px;white-space:nowrap;">序号</th>
+                    <th style="padding:8px 12px;font-size:13px;white-space:nowrap;color:#e74c3c;">前区(5个)</th>
+                    <th style="padding:8px 12px;font-size:13px;white-space:nowrap;color:#3498db;">后区(2个)</th>
+                    <th style="padding:8px 12px;font-size:13px;white-space:nowrap;">相似度</th>
                 </tr>
                 {rows}
             </table>
-            <p style="margin-top:16px;color:#e74c3c;font-size:13px;">
+            <p style="margin-top:14px;color:#e74c3c;font-size:12px;">
                 ⚠️ 彩票具有随机性，本预测仅供娱乐参考，请理性购彩
             </p>
             {submit_section}
