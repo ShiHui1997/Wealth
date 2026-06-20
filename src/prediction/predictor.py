@@ -21,15 +21,19 @@ class DaletouPredictor:
     def predict(self, draws: List[Dict], top_n: int = 3,
                 candidates_count: int = 1000,
                 storage=None,
-                random_seed: int = 42) -> List[Tuple[Dict, float]]:
+                random_seed: int = None) -> List[Tuple[Dict, float]]:
         """
         预测下一期号码
         使用固定随机种子，确保同样的历史数据每次得出相同结果
-        random_seed: 随机种子，修改可得到不同但固定的结果
-        storage: 可选，传入则以它加载校准权重
+        random_seed: 随机种子，None 时从数据库自动读取（推荐）
+        storage: 必须传入，用于加载校准权重和读取当前种子
         Returns: [(号码dict, 相似度得分), ...] 按得分降序
         """
-        # 固定随机种子，确保结果可复现
+        # 从数据库读取种子（若未显式指定）
+        if storage and random_seed is None:
+            random_seed = storage.get_current_seed()
+        if random_seed is None:
+            random_seed = 42
         random.seed(random_seed)
 
         print(f"\n[预测] 基于最近 {len(draws)} 期数据进行分析...")

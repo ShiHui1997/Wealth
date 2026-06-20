@@ -32,9 +32,9 @@ class SelfCalibrator:
         返回新的权重配置
         """
         stats = self.storage.get_verification_stats()
-        if stats["total_verified"] < 5 and not force:
+        if stats["total_verified"] < 10 and not force:
             print(f"[校准] 验证数据不足（{stats['total_verified']}期），"
-                  f"需要至少5期才能校准")
+                  f"需要至少10期才能校准")
             return self._load_current_weights()
 
         print(f"\n[校准] 基于 {stats['total_verified']} 期验证结果进行自我调整...")
@@ -52,6 +52,12 @@ class SelfCalibrator:
                 value,
                 f"基于{stats['total_verified']}期验证结果自动校准"
             )
+
+        # 校准次数 +1，并自动轮换种子
+        calib_count = self.storage.incr_calibration_count()
+        new_seed = 42 + calib_count * 7
+        self.storage.set_current_seed(new_seed)
+        print(f"[校准] 校准次数更新为 {calib_count}，种子已轮换为 {new_seed}")
 
         # 也保存命中率统计
         self._save_hit_stats(stats)

@@ -184,7 +184,8 @@ def cmd_stats(args, config):
 def cmd_predict(args, config):
     """生成预测并推送"""
     storage = LotteryStorage(config["database"]["path"])
-    draws = storage.get_draws_recent(config["analysis"]["recent_periods"])
+    # 使用全部历史数据（而非仅最近N期），确保特征学习最充分
+    draws = storage.get_all_draws()
 
     if len(draws) < 10:
         print(f"[预测] 历史数据不足（仅{len(draws)}期），至少需要10期")
@@ -193,14 +194,12 @@ def cmd_predict(args, config):
     predictor = DaletouPredictor()
     top_n = config["prediction"]["recommend_count"]
     candidates_count = config["prediction"]["candidate_count"]
-    random_seed = config["prediction"].get("random_seed", 42)
-
+    # random_seed 不再从 config.yaml 读取，由 predictor 自动从数据库获取
     prediction = predictor.predict(
         draws,
         top_n=top_n,
         candidates_count=candidates_count,
-        storage=storage,  # 传入storage以加载校准权重
-        random_seed=random_seed,
+        storage=storage,
     )
 
     # 打印结果
@@ -227,7 +226,7 @@ def cmd_predict(args, config):
 
 
 def cmd_run(args, config):
-    """完整运行一次：获取最新开奖 + 验证上期预测 + 校准 + 预测下期 + 推送"""
+    """完整运行一次：获取最新开奖 + 回归分析 + 验证上期预测 + 校准 + 预测下期 + 推送"""
     storage = LotteryStorage(config["database"]["path"])
 
     print(f"\n{'='*50}")
@@ -235,28 +234,52 @@ def cmd_run(args, config):
     print(f"{'='*50}")
 
     # 第一步：尝试获取最新开奖（失败不阻断，用数据库现有数据继续）
-    print("\n[步骤1/4] 尝试获取最新开奖数据...")
+    print("\n[步骤1/5] 尝试获取最新开奖数据...")
     try:
         cmd_fetch(args, config)
     except Exception as e:
-        print(f"[步骤1/4] 获取最新数据失败（可能为国外服务器，无法访问体彩API）")
-        print(f"[步骤1/4] 将使用数据库中已有数据继续...")
+        print(f"[步骤1/5] 获取最新数据失败（可能为国外服务器，无法访问体彩API）")
+        print(f"[步骤1/5] 将使用数据库中已有数据继续...")
 
-    # 第二步：验证上期预测
-    print("\n[步骤2/4] 验证上期预测...")
+    # 第二步：批次回归分析（新数据进来后，对比历史特征是否有漂移）
+    print("\n[步骤2/5] 执行批次回归分析...")
+    try:
+        analyzer = DaletouAnalyzer()
+        regression_analyzer = BatchRegressionAnalyzer(analyzer)
+        all_draws = storage.get_all_draws()
+        if len(all_draws) >= 100:
+            # 取最近50期作为"新批次"，与更早的历史数据做对比
+            recent_batch = all_draws[-50:]
+            earlier_draws = all_draws[:-50]
+            report = regression_analyzer.analyze_batch(recent_batch, earlier_draws)
+            storage.save_batch_analysis(
+                0,  # batch_no=0 表示"最新回归"，非正式批次
+                recent_batch[0]["issue"],
+                recent_batch[-1]["issue"],
+                report["diffs"],
+                report["notes"]
+            )
+            print(f"[步骤2/5] 回归分析完成")
+        else:
+            print(f"[步骤2/5] 数据不足100期，跳过回归分析")
+    except Exception as e:
+        print(f"[步骤2/5] 回归分析失败: {e}")
+
+    # 第三步：验证上期预测
+    print("\n[步骤3/5] 验证上期预测...")
     storage_r = LotteryStorage(config["database"]["path"])
     cmd_verify(argparse.Namespace(issue=None), config)
 
-    # 第三步：校准（如果数据足够）
+    # 第四步：校准（如果数据足够）
     stats = storage_r.get_verification_stats()
-    if stats["total_verified"] >= 5:
-        print("\n[步骤3/4] 执行自我校准...")
+    if stats["total_verified"] >= 10:
+        print("\n[步骤4/5] 执行自我校准...")
         cmd_calibrate(argparse.Namespace(force=False), config)
     else:
-        print(f"\n[步骤3/4] 跳过校准（已验证{stats['total_verified']}期，需要>=5期）")
+        print(f"\n[步骤4/5] 跳过校准（已验证{stats['total_verified']}期，需要>=10期）")
 
-    # 第四步：预测下期并推送（run 模式下始终推送）
-    print("\n[步骤4/4] 生成并推送下期预测...")
+    # 第五步：预测下期并推送（run 模式下始终推送）
+    print("\n[步骤5/5] 生成并推送下期预测...")
     predict_args = argparse.Namespace(no_push=False)
     cmd_predict(predict_args, config)
 

@@ -488,3 +488,51 @@ class LotteryStorage:
                 "any_front_3plus": bool(r["any_front_match"]),
                 "any_back_1plus": bool(r["any_back_match"]),
             } for r in rows]
+
+    # ══════════════════════════════════════════
+    # 校准次数 & 当前种子（用于自动种子轮换）
+    # ══════════════════════════════════════════
+
+    def get_calibration_count(self) -> int:
+        """读取已完成的校准次数（用于计算种子偏移）"""
+        with sqlite3.connect(self.db_path) as conn:
+            r = conn.execute(
+                "SELECT param_value FROM calibration WHERE param_name = 'calibration_count'"
+            ).fetchone()
+            return int(r[0]) if r else 0
+
+    def incr_calibration_count(self) -> int:
+        """校准次数 +1，返回新的次数"""
+        count = self.get_calibration_count() + 1
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("""
+                INSERT INTO calibration (updated_at, param_name, param_value, note)
+                VALUES (?, 'calibration_count', ?, ?)
+                ON CONFLICT(param_name) DO UPDATE SET
+                    updated_at = excluded.updated_at,
+                    param_value = excluded.param_value,
+                    note = excluded.note
+            """, (datetime.now().isoformat(), float(count), f"第{count}次校准"))
+            conn.commit()
+        return count
+
+    def get_current_seed(self) -> int:
+        """读取当前预测用的随机种子（默认42）"""
+        with sqlite3.connect(self.db_path) as conn:
+            r = conn.execute(
+                "SELECT param_value FROM calibration WHERE param_name = 'current_seed'"
+            ).fetchone()
+            return int(r[0]) if r else 42
+
+    def set_current_seed(self, seed: int):
+        """写入当前种子到数据库"""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("""
+                INSERT INTO calibration (updated_at, param_name, param_value, note)
+                VALUES (?, 'current_seed', ?, ?)
+                ON CONFLICT(param_name) DO UPDATE SET
+                    updated_at = excluded.updated_at,
+                    param_value = excluded.param_value,
+                    note = excluded.note
+            """, (datetime.now().isoformat(), float(seed), f"种子={seed}"))
+            conn.commit()
