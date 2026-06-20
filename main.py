@@ -210,7 +210,7 @@ def cmd_predict(args, config):
     storage.save_prediction(next_issue, prediction)
 
     # 推送到PushPlus
-    if not args.no_push:
+    if not getattr(args, 'no_push', False):
         notifier = PushPlusNotifier(config["pushplus"]["token"])
         html_content = predictor.format_prediction_html(prediction)
         notifier.send_prediction(html_content, next_issue)
@@ -226,9 +226,13 @@ def cmd_run(args, config):
     print(f"[完整运行] {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"{'='*50}")
 
-    # 第一步：获取最新开奖
-    print("\n[步骤1/4] 获取最新开奖数据...")
-    cmd_fetch(args, config)
+    # 第一步：尝试获取最新开奖（失败不阻断，用数据库现有数据继续）
+    print("\n[步骤1/4] 尝试获取最新开奖数据...")
+    try:
+        cmd_fetch(args, config)
+    except Exception as e:
+        print(f"[步骤1/4] 获取最新数据失败（可能为国外服务器，无法访问体彩API）")
+        print(f"[步骤1/4] 将使用数据库中已有数据继续...")
 
     # 第二步：验证上期预测
     print("\n[步骤2/4] 验证上期预测...")
@@ -243,9 +247,10 @@ def cmd_run(args, config):
     else:
         print(f"\n[步骤3/4] 跳过校准（已验证{stats['total_verified']}期，需要>=5期）")
 
-    # 第四步：预测下期并推送
+    # 第四步：预测下期并推送（run 模式下始终推送）
     print("\n[步骤4/4] 生成并推送下期预测...")
-    cmd_predict(args, config)
+    predict_args = argparse.Namespace(no_push=False)
+    cmd_predict(predict_args, config)
 
     print(f"\n{'='*50}")
     print(f"[完整运行] 完成！")
