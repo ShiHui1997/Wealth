@@ -2,7 +2,7 @@
 
 # 推送配置 (PushPlus)
 pushplus:
-  token: ""  # 在这里填写你的 PushPlus token
+  token: "5061c14a3f6e4a82abb0fc9f11879aff"  # 在这里填写你的 PushPlus token
   api_url: "http://www.pushplus.plus/send"
 
 # 数据库配置
