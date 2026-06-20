@@ -1,0 +1,51 @@
+name: 大乐透定时预测推送
+
+# 北京时间 每周一/三/六 19:30 触发（UTC+8 = UTC 11:30）
+on:
+  schedule:
+    - cron: "30 11 * * 1,3,6"
+  workflow_dispatch:  # 支持手动触发
+
+jobs:
+  predict:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 设置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 安装依赖
+        run: pip install -r requirements.txt
+
+      - name: 获取最新开奖数据
+        run: python main.py fetch
+
+      - name: 生成预测并推送
+        env:
+          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+        run: |
+          # 将 token 写入配置文件
+          python -c "
+          import yaml, os;
+          with open('config/config.yaml') as f: cfg = yaml.safe_load(f);
+          cfg['pushplus']['token'] = os.environ['PUSHPLUS_TOKEN'];
+          with open('config/config.yaml', 'w') as f: yaml.dump(cfg, f, allow_unicode=True);
+          "
+
+          python main.py predict
+
+      - name: 提交更新的数据库
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/ logs/
+          git diff --cached --quiet || git commit -m "chore: 更新开奖数据 $(date +%Y-%m-%d)"
+          git push
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

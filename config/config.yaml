@@ -1,0 +1,48 @@
+# 大乐透预测系统配置
+
+# 推送配置 (PushPlus)
+pushplus:
+  token: ""  # 在这里填写你的 PushPlus token
+  api_url: "http://www.pushplus.plus/send"
+
+# 数据库配置
+database:
+  path: "data/daletou.db"
+
+# 数据获取配置
+data_source:
+  # 大乐透历史数据API (500彩票网)
+  api_base: "https://kaijiang.500.com"
+  # 每批获取期数
+  batch_size: 50
+  # 请求间隔 (秒)
+  request_delay: 1
+
+# 预测配置
+prediction:
+  # 推荐注数
+  recommend_count: 3
+  # 生成候选注数 (用于筛选最相似的)
+  candidate_count: 100
+  # 前区号码范围
+  front_min: 1
+  front_max: 35
+  front_count: 5
+  # 后区号码范围
+  back_min: 1
+  back_max: 12
+  back_count: 2
+
+# 调度配置
+schedule:
+  # 预测时间 (周一/三/六 19:30)
+  predict_time: "19:30"
+  # 时区
+  timezone: "Asia/Shanghai"
+
+# 分析配置
+analysis:
+  # 用于分析的最近期数
+  recent_periods: 100
+  # 热号统计期数
+  hot_periods: 30
