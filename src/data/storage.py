@@ -21,7 +21,7 @@ class LotteryStorage:
     def _init_db(self):
         """初始化所有数据库表"""
         with sqlite3.connect(self.db_path) as conn:
-            # ── 表1: 历史开奖数据 ──
+            # 表1: 历史开奖数据
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS draws (
                     issue      TEXT PRIMARY KEY,
@@ -34,22 +34,21 @@ class LotteryStorage:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_draw_date ON draws(draw_date DESC)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_issue   ON draws(issue DESC)")
 
-            # ── 表2: 预测记录 ──
-            # 每次调用 predict() 都会在这里写入一条记录
+            # 表2: 预测记录
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS predictions (
                     id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                    target_issue TEXT NOT NULL,     -- 预测的是哪一期
-                    predicted_at TEXT NOT NULL,     -- 预测时间
-                    rank        INTEGER NOT NULL,    -- 第几注（1/2/3）
-                    front_numbers TEXT NOT NULL,    -- 前区号码 JSON
-                    back_numbers  TEXT NOT NULL,    -- 后区号码 JSON
-                    similarity_score REAL NOT NULL,  -- 相似度得分
-                    model_version  TEXT DEFAULT 'v1',  -- 模型版本（用于追踪策略演进）
-                    verified    INTEGER DEFAULT 0,   -- 是否已与真实开奖比对（0/1）
-                    front_match_count INTEGER DEFAULT NULL,  -- 前区命中个数
-                    back_match_count  INTEGER DEFAULT NULL,  -- 后区命中个数
-                    is_exact_match   INTEGER DEFAULT NULL   -- 是否完全命中（前5+后2全中）
+                    target_issue TEXT NOT NULL,
+                    predicted_at TEXT NOT NULL,
+                    rank        INTEGER NOT NULL,
+                    front_numbers TEXT NOT NULL,
+                    back_numbers  TEXT NOT NULL,
+                    similarity_score REAL NOT NULL,
+                    model_version  TEXT DEFAULT 'v1',
+                    verified    INTEGER DEFAULT 0,
+                    front_match_count INTEGER DEFAULT NULL,
+                    back_match_count  INTEGER DEFAULT NULL,
+                    is_exact_match   INTEGER DEFAULT NULL
                 )
             """)
             conn.execute("""
@@ -57,38 +56,35 @@ class LotteryStorage:
                 ON predictions(target_issue, rank)
             """)
 
-            # ── 表3: 验证汇总（每期开奖后更新） ──
-            # 记录每期预测 vs 真实开奖的对比结果
+            # 表3: 验证汇总（每期开奖后更新）
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS verifications (
                     issue           TEXT PRIMARY KEY,
                     verified_at     TEXT NOT NULL,
-                    best_front_match INTEGER,    -- 3注中最好前区命中数
-                    best_back_match  INTEGER,    -- 3注中最好后区命中数
-                    any_front_match  INTEGER,    -- 3注中是否至少有一注前区命中>=3
-                    any_back_match   INTEGER,    -- 3注中是否至少有一注后区命中>=1
-                    avg_similarity   REAL,       -- 3注平均相似度
-                    actual_front     TEXT,        -- 真实前区 JSON（冗余存储，方便查询）
-                    actual_back      TEXT         -- 真实后区 JSON
+                    best_front_match INTEGER,
+                    best_back_match  INTEGER,
+                    any_front_match  INTEGER,
+                    any_back_match   INTEGER,
+                    avg_similarity   REAL,
+                    actual_front     TEXT,
+                    actual_back      TEXT
                 )
             """)
 
-            # ── 表4: 批次回归分析记录 ──
-            # 每获取50期数据后，记录这批数据的特征与全局特征的差异
+            # 表4: 批次回归分析记录
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS batch_analysis (
                     id           INTEGER PRIMARY KEY AUTOINCREMENT,
-                    batch_no     INTEGER NOT NULL,    -- 第几批（从1开始）
-                    batch_start  TEXT NOT NULL,       -- 这批起始期号
-                    batch_end    TEXT NOT NULL,       -- 这批结束期号
-                    analyzed_at  TEXT NOT NULL,       -- 分析时间
-                    feature_diff TEXT NOT NULL,       -- 这批特征 vs 全局特征差异 JSON
-                    regression_notes TEXT           # 回归分析结论（文本）
+                    batch_no     INTEGER NOT NULL,
+                    batch_start  TEXT NOT NULL,
+                    batch_end    TEXT NOT NULL,
+                    analyzed_at  TEXT NOT NULL,
+                    feature_diff TEXT NOT NULL,
+                    regression_notes TEXT
                 )
             """)
 
-            # ── 表5: 模型校准参数（自我学习结果） ──
-            # 系统根据验证结果自动调整的权重/参数存在这里
+            # 表5: 模型校准参数
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS calibration (
                     id            INTEGER PRIMARY KEY AUTOINCREMENT,
