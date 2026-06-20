@@ -113,7 +113,8 @@ class DaletouPredictor:
         lines.append("\n⚠️  温馨提示：彩票具有随机性，本预测仅供娱乐参考")
         return "\n".join(lines)
 
-    def format_prediction_html(self, prediction: List[Tuple[Dict, float]]) -> str:
+    def format_prediction_html(self, prediction: List[Tuple[Dict, float]],
+                                submit_url: str = "") -> str:
         """格式化为HTML（适合PushPlus推送）"""
         rows = ""
         for i, (nums, score) in enumerate(prediction, 1):
@@ -126,6 +127,27 @@ class DaletouPredictor:
                 <td style="padding:8px 15px;font-weight:bold;color:#3498db;">{back_str}</td>
                 <td style="padding:8px 15px;color:#888;">{score:.4f}</td>
             </tr>"""
+
+        # 底部附加：开奖数据更新链接
+        submit_section = ""
+        if submit_url:
+            submit_section = f"""
+            <div style="margin-top:24px;padding:16px;background:#f0f7ff;border-radius:12px;border-left:4px solid #3498db;">
+                <p style="margin:0 0 10px 0;font-size:14px;color:#2c3e50;font-weight:bold;">
+                    📝 开奖后请更新数据
+                </p>
+                <p style="margin:0;font-size:13px;color:#666;">
+                    已知最新开奖号码？点击下方链接填写，系统将自动更新并重新预测 👇
+                </p>
+                <a href="{submit_url}" target="_blank"
+                   style="display:inline-block;margin-top:12px;padding:12px 28px;
+                          background:linear-gradient(135deg,#3498db,#2980b9);
+                          color:#fff;border-radius:8px;text-decoration:none;
+                          font-weight:bold;font-size:15px;">
+                    ✏️ 提交最新开奖号码
+                </a>
+            </div>"""
+
         return f"""
         <div style="font-family:雅黑,sans-serif;padding:20px;">
             <h2 style="color:#2c3e50;">🎯 大乐透本期预测</h2>
@@ -139,8 +161,9 @@ class DaletouPredictor:
                 </tr>
                 {rows}
             </table>
-            <p style="margin-top:20px;color:#e74c3c;font-size:13px;">
+            <p style="margin-top:16px;color:#e74c3c;font-size:13px;">
                 ⚠️ 彩票具有随机性，本预测仅供娱乐参考，请理性购彩
             </p>
+            {submit_section}
         </div>
         """

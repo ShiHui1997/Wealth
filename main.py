@@ -212,10 +212,16 @@ def cmd_predict(args, config):
     # 推送到PushPlus
     if not getattr(args, 'no_push', False):
         notifier = PushPlusNotifier(config["pushplus"]["token"])
-        html_content = predictor.format_prediction_html(prediction)
+        submit_url = config.get("submit", {}).get("url", "")
+        html_content = predictor.format_prediction_html(prediction, submit_url=submit_url)
         notifier.send_prediction(html_content, next_issue)
     else:
-        print("[预测] --no-push 已指定，跳过推送")
+        submit_url = config.get("submit", {}).get("url", "")
+        print(f"[预测] --no-push 已指定，跳过推送")
+        if submit_url:
+            print(f"[预测] 提交链接: {submit_url}")
+        else:
+            print(predictor.format_prediction_html(prediction))
 
 
 def cmd_run(args, config):
