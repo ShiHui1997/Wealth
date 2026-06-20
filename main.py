@@ -3,8 +3,8 @@
 大乐透预测系统 - 主入口
 用法：
   python main.py init          初始化数据库
-  python main.py fetch        获取最新一期开奖数据
-  python main.py fetch-all   批量获取历史数据（50期/批，直到第一期）
+  python main.py fetch-all    获取全部历史数据（首次运行，约2885期）
+  python main.py fetch        获取最新一期开奖数据（日常增量更新）
   python main.py verify       验证最新一期预测 vs 真实开奖
   python main.py verify --issue 2024001   验证指定期号
   python main.py calibrate    根据验证结果校准权重
@@ -50,8 +50,7 @@ def cmd_init(args, config):
 def cmd_fetch(args, config):
     storage = LotteryStorage(config["database"]["path"])
     fetcher = DaletouFetcher(
-        batch_size=config["data_source"]["batch_size"],
-        delay=config["data_source"]["request_delay"],
+        delay=config["data_source"].get("request_delay", 0.5),
     )
     print("[获取最新] 开始...")
     latest = fetcher.fetch_latest()
@@ -74,69 +73,53 @@ def cmd_fetch(args, config):
 
 
 def cmd_fetch_all(args, config):
-    """批量获取历史数据，每50期做一批次回归分析"""
+    """获取全部历史数据（首次运行，一次性拉完2885期）"""
     storage = LotteryStorage(config["database"]["path"])
     fetcher = DaletouFetcher(
-        batch_size=config["data_source"]["batch_size"],
-        delay=config["data_source"]["request_delay"],
+        delay=config["data_source"].get("request_delay", 0.5),
     )
     analyzer = DaletouAnalyzer()
     regression_analyzer = BatchRegressionAnalyzer(analyzer)
 
-    print("[全量获取] 开始...")
     existing = storage.count()
-    print(f"[全量获取] 当前数据库: {existing} 期")
+    if existing > 0:
+        print(f"[全量获取] 数据库已有 {existing} 期数据")
+        print(f"[全量获取] 如需重新获取，请先删除 data/daletou.db 后运行 init")
 
+    # 一步到位：分页拉取全部历史
+    all_data = fetcher.fetch_all()
+    if not all_data:
+        print("[全量获取] 未获取到任何数据，退出")
+        return
+
+    # 批量保存（自动去重）
+    new_count = storage.save_draws_batch(all_data)
+    total = storage.count()
+
+    print(f"\n[全量获取] 新增 {new_count} 期，数据库现有 {total} 期")
+    print(f"[全量获取] 范围: {storage.get_first_issue()} ~ {storage.get_latest_issue()}")
+
+    # 对每50期做批次回归分析
+    batch_size = config["analysis"].get("batch_size", 50)
+    total_draws = storage.get_all_draws()
     batch_no = 0
-    total_new = 0
+    for start_i in range(0, len(total_draws), batch_size):
+        batch_draws = total_draws[start_i:start_i + batch_size]
+        global_draws = total_draws[:start_i] + total_draws[start_i + batch_size:]
 
-    while True:
-        batch_no += 1
-        print(f"\n[全量获取] 第{batch_no}批（每批{config['data_source']['batch_size']}期）")
+        if len(global_draws) >= 50:
+            batch_no += 1
+            report = regression_analyzer.analyze_batch(batch_draws, global_draws)
+            storage.save_batch_analysis(
+                batch_no,
+                batch_draws[0]["issue"],
+                batch_draws[-1]["issue"],
+                report["diffs"],
+                report["notes"]
+            )
 
-        batch_data = fetcher.fetch_history_batch(batch_no)
-        if not batch_data:
-            print("[全量获取] 无更多数据，停止")
-            break
-
-        # 保存本批数据
-        new_count = storage.save_draws_batch(batch_data)
-        total_new += new_count
-        print(f"[全量获取] 本批新增 {new_count} 期，累计新增 {total_new} 期")
-
-        # ── 批次回归分析 ──
-        if storage.count() >= config["data_source"]["batch_size"]:
-            all_draws = storage.get_all_draws()
-            # 本批数据（最近 batch_size 期）
-            batch_draws = all_draws[-config["data_source"]["batch_size"]:]
-            # 全局数据（不含本批）
-            global_draws = all_draws[:-config["data_source"]["batch_size"]] if len(all_draws) > len(batch_draws) else all_draws
-
-            if len(global_draws) >= 50:
-                report = regression_analyzer.analyze_batch(batch_draws, global_draws)
-                storage.save_batch_analysis(
-                    batch_no,
-                    batch_draws[0]["issue"],
-                    batch_draws[-1]["issue"],
-                    report["diffs"],
-                    report["notes"]
-                )
-                print(f"[批次回归] 第{batch_no}批分析已保存")
-
-        if new_count == 0:
-            print("[全量获取] 已无新数据")
-            break
-
-        # 检查是否到第一期
-        first = storage.get_first_issue()
-        if first and (first.endswith("001") or first == "07001" or len(first) <= 5):
-            print(f"[全量获取] 已获取到第一期: {first}")
-            break
-
-        import time
-        time.sleep(config["data_source"]["request_delay"])
-
-    print(f"\n[全量获取] 完成！共新增 {total_new} 期，现有 {storage.count()} 期")
+    if batch_no > 0:
+        print(f"[全量获取] 已完成 {batch_no} 批次回归分析")
 
 
 def cmd_verify(args, config):
@@ -307,7 +290,7 @@ def main():
     subparsers.add_parser("stats", help="显示预测效果统计")
     p_predict = subparsers.add_parser("predict", help="生成并推送预测")
     p_predict.add_argument("--no-push", action="store_true", help="不推送到PushPlus")
-    subparsers.add_parser("fetch-all", help="批量获取所有历史数据（含批次回归分析）")
+    subparsers.add_parser("fetch-all", help="获取全部历史数据（首次运行，约2885期）")
     subparsers.add_parser("run", help="完整运行一次（获取+验证+校准+预测+推送）")
 
     args = parser.parse_args()

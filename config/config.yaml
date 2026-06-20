@@ -11,12 +11,9 @@ database:
 
 # 数据获取配置
 data_source:
-  # 大乐透历史数据API (500彩票网)
-  api_base: "https://kaijiang.500.com"
-  # 每批获取期数
-  batch_size: 50
-  # 请求间隔 (秒)
-  request_delay: 1
+  # 数据源：中国体彩官方API (webapi.sporttery.cn)
+  # 请求间隔 (秒) — 全量获取时分页请求的间隔，避免频率限制
+  request_delay: 0.5
 
 # 预测配置
 prediction:
@@ -46,3 +43,5 @@ analysis:
   recent_periods: 100
   # 热号统计期数
   hot_periods: 30
+  # 批次回归分析时的每批期数
+  batch_size: 50
