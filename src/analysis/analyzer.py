@@ -4,7 +4,7 @@
 """
 import json
 import math
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional
 from collections import Counter
 import random
 
