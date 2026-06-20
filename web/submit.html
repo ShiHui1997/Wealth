@@ -180,10 +180,13 @@
   </div>
 
 <script>
-// 自动跳到下一个输入框
+// 自动跳到下一个输入框（修复 number 类型在手机端的兼容性）
 document.querySelectorAll('input').forEach(function(el) {
   el.addEventListener('input', function() {
-    if (this.value.length >= this.placeholder.length) {
+    var val = this.value;
+    // number 输入框：前区最多2位数(01-35)，后区最多2位数(01-12)
+    var maxLen = 2;
+    if (val.length >= maxLen) {
       var inputs = Array.from(document.querySelectorAll('input'));
       var idx = inputs.indexOf(this);
       if (idx < inputs.length - 1) inputs[idx + 1].focus();
@@ -202,6 +205,7 @@ function getValues(containerId, count) {
 }
 
 function submitData() {
+  var btn = document.querySelector('.btn-submit');
   var issue = document.getElementById('issue').value.trim();
   if (!issue) { alert('请输入期号'); return; }
 
@@ -223,12 +227,17 @@ function submitData() {
   body += '| \u524D\u533A | ' + front.join(' ') + ' |\n';
   body += '| \u540E\u533A | ' + back.join(' ') + ' |\n';
 
-  // URL 编码
+  // 直接跳转到 GitHub Issue 创建页（window.open 在手机端/iframe 中会被拦截）
   var url = 'https://github.com/ShiHui1997/Wealth/issues/new'
     + '?title=' + encodeURIComponent(title)
     + '&body=' + encodeURIComponent(body);
 
-  window.open(url, '_blank');
+  // 加视觉反馈
+  btn.textContent = '⏳ 正在跳转...';
+  btn.style.background = '#999';
+  btn.disabled = true;
+
+  window.location.href = url;
 }
 </script>
 </body>
