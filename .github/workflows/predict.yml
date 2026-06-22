@@ -36,7 +36,6 @@ jobs:
         uses: actions/cache@v4
         with:
           path: data/daletou.db
-          # 使用稳定key：基于分支名，同分支复用同一缓存
           key: daletou-db-${{ runner.os }}-py311-${{ hashFiles('**/requirements.txt') }}
           restore-keys: |
             daletou-db-${{ runner.os }}-py311-
@@ -64,152 +63,88 @@ jobs:
             python main.py fetch-all
           fi
 
-      - name: 写入 PushPlus Token 到配置文件
+      # ═══════════════════════════════════════════
+      # 写入Token + 推送预检（一步完成，失败则终止）
+      # ═══════════════════════════════════════════
+      - name: 写入Token并验证推送通道
         env:
           PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
         run: |
-          python -c "
-          import yaml, os
-          cfg_path = 'config/config.yaml'
-          with open(cfg_path) as f:
-              cfg = yaml.safe_load(f)
-          token = os.environ.get('PUSHPLUS_TOKEN', '')
-          cfg['pushplus']['token'] = token
-          with open(cfg_path, 'w') as f:
-              yaml.dump(cfg, f, allow_unicode=True, sort_keys=False)
-          print(f'PushPlus token 已写入配置 (长度: {len(token)})')
-          if not token:
-              print('⚠️ WARNING: PUSHPLUS_TOKEN 环境变量为空!')
-              exit(1)
-          "
+          echo "═══════════════════════════════════════"
+          echo "  Token写入 + 推送通道预检"
+          echo "═══════════════════════════════════════"
 
-      - name: 验证Token和数据库状态
-        run: |
-          echo "=== 配置验证 ==="
-          python -c "
+          # 1. 写入Token到config.yaml
+          python scripts/write_token.py
+          echo ""
+
+          # 2. 验证config中的Token
+          TOKEN_LEN=$(python -c "
           import yaml
           with open('config/config.yaml') as f:
               cfg = yaml.safe_load(f)
-          token = cfg.get('pushplus', {}).get('token', '')
-          print(f'Token长度: {len(token)}')
-          print(f'Token状态: {\"✅ 已配置\" if token else \"❌ 为空\"} ')
-          "
-          echo "=== 数据库验证 ==="
-          if [ -f data/daletou.db ]; then
-            COUNT=$(python -c "import sqlite3; print(sqlite3.connect('data/daletou.db').execute('SELECT COUNT(*) FROM draws').fetchone()[0])")
-            echo "数据期数: $COUNT"
-            if [ "$COUNT" -lt 10 ]; then
-              echo "❌ 数据不足，预测将提前退出!"
-            fi
-          else
-            echo "❌ 数据库文件不存在"
+          t = cfg.get('pushplus', {}).get('token', '')
+          print(len(t))
+          ")
+          echo "✅ config.yaml中Token长度: $TOKEN_LEN"
+
+          if [ "$TOKEN_LEN" -lt 10 ]; then
+              echo "❌ Token过短或为空！"
+              exit 1
           fi
 
-      - name: 推送连通性测试（关键诊断步骤）
-        env:
-          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
-        run: |
-          echo "═══════════════════════════════════════"
-          echo "  PushPlus API 连通性测试"
-          echo "═══════════════════════════════════════"
+          # 3. 推送通道预检：发一条极简测试消息
+          echo ""
+          echo "[预检] 发送测试消息到PushPlus..."
           python -c "
-          import json, urllib.request, ssl, os
+          import json, urllib.request, ssl, os, yaml
 
-          token = os.environ.get('PUSHPLUS_TOKEN', '')
-          print(f'Token长度: {len(token)}')
-          print(f'Token非空: {bool(token)}')
+          # 从config读取token（和主流程一致）
+          with open('config/config.yaml') as f:
+              cfg = yaml.safe_load(f)
+          token = cfg.get('pushplus', {}).get('token', '')
 
-          if not token:
-              print('❌ Token为空！无法测试')
+          payload = {
+              'token': token,
+              'title': '🔧 预检测试 - 请忽略',
+              'content': '<p>预测系统启动预检，如果你收到这条消息说明推送链路畅通 ✅</p>',
+              'template': 'html',
+          }
+          ctx = ssl.create_default_context()
+          req = urllib.request.Request(
+              'https://www.pushplus.plus/send',
+              data=json.dumps(payload).encode('utf-8'),
+              headers={'Content-Type': 'application/json'},
+              method='POST'
+          )
+          resp = urllib.request.urlopen(req, timeout=30, context=ctx)
+          body = json.loads(resp.read().decode('utf-8'))
+          print(f'API响应: {body}')
+          if body.get('code') == 200:
+              print('✅ 预检推送成功！（手机应收到「🔧 预检测试」消息）')
+          else:
+              print(f'❌ API返回错误: {body}')
               exit(1)
+          "
 
-          # 测试1: DNS解析
-          import socket
-          print()
-          print('[测试1] DNS解析 www.pushplus.plus ...')
-          try:
-              ip = socket.gethostbyname('www.pushplus.plus')
-              print(f'  DNS解析成功: {ip}')
-          except Exception as e:
-              print(f'  ❌ DNS解析失败: {e}')
-              exit(1)
-
-          # 测试2: HTTPS连接
-          print()
-          print('[测试2] HTTPS连接 https://www.pushplus.plus/send ...')
-          try:
-              ctx = ssl.create_default_context()
-              req = urllib.request.Request(
-                  'https://www.pushplus.plus/send',
-                  data=json.dumps({
-                      'token': token,
-                      'title': '🔧 连通性测试 - Actions环境',
-                      'content': '<p>如果你收到这条消息，说明GitHub Actions → PushPlus → 微信链路畅通</p>',
-                      'template': 'html',
-                  }).encode('utf-8'),
-                  headers={'Content-Type': 'application/json'},
-                  method='POST'
-              )
-              resp = urllib.request.urlopen(req, timeout=30, context=ctx)
-              body = resp.read().decode('utf-8')
-              result = json.loads(body)
-              print(f'  响应状态码: {resp.status}')
-              print(f'  API响应: {result}')
-              if result.get('code') == 200:
-                  print(f'  ✅ 推送发送成功！（请检查手机微信）')
-              else:
-                  print(f'  ❌ API返回错误: {result}')
-                  exit(1)
-          except urllib.error.URLError as e:
-              print(f'  ❌ 连接错误(URLError): {e.reason}')
-              exit(1)
-          except urllib.error.HTTPError as e:
-              print(f'  ❌ HTTP错误: {e.code} {e.reason}')
-              exit(1)
-          except Exception as e:
-              print(f'  ❌ 异常: {type(e).__name__}: {e}')
-              exit(1)
-
-          print()
-          echo '═══════════════════════════════════════'
+          echo ""
+          echo "═══════════════════════════════════════"
 
       # ═══════════════════════════════════════════
-      # 完整运行：获取+验证+校准+预测+推送
+      # 主运行流程
       # ═══════════════════════════════════════════
       - name: 完整运行（获取最新开奖 + 验证上期 + 校准 + 预测下期 + 推送）
+        id: main-run
         run: python main.py run
-        continue-on-error: false
 
       # ═══════════════════════════════════════════
-      # 后续步骤：保存日志 + 更新缓存 + 打印状态
+      # 后置检查
       # ═══════════════════════════════════════════
-      - name: 保存运行日志
-        if: always()
-        run: |
-          mkdir -p logs
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add logs/ 2>/dev/null || true
-          git diff --cached --quiet || {
-            git commit -m "chore: 运行日志 $(date +%Y-%m-%d)"
-            git push
-          }
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: 打印校准状态（便于查看模型演化）
-        if: always()
-        run: python main.py stats || true
-
-      - name: 打印系统健康度
-        if: always()
-        run: python main.py health || true
-
       - name: 检查推送结果
         if: always()
         run: |
           echo "═══════════════════════════════════════"
-          echo "  推送结果检查"
+          echo "  推送结果最终检查"
           echo "═══════════════════════════════════════"
           if [ -f push_result.json ]; then
             python -c "
@@ -220,23 +155,25 @@ jobs:
           issue = r.get('issue', '?')
           reason = r.get('reason', '')
           icons = {'success': '✅', 'failed': '❌'}
-          print(f'  状态: {icons.get(status, \"⚠️\")} {status}')
-          print(f'  期号: {issue}')
+          print(f'  推送状态: {icons.get(status, \"⚠️\")} {status}')
+          print(f'  预测期号: {issue}')
           if reason:
-              print(f'  原因: {reason}')
-          if status != 'success':
-              print()
-              print('  ⚠️ 推送未成功！请检查：')
-              print('    1. Secrets中PUSHPLUS_TOKEN是否正确设置')
-              print('    2. Token是否在PushPlus平台有效: http://www.pushplus.plus/')
-              exit(1)
+              print(f'  失败原因: {reason}')
           "
             echo "═══════════════════════════════════════"
           else
-            echo "  ⚠️ push_result.json 不存在（预测可能未执行到推送步骤）"
+            echo "  ⚠️ push_result.json 不存在"
+            echo "  可能原因："
+            echo "    1. 数据不足10期 → cmd_predict提前退出"
+            echo "    2. 运行过程中发生未捕获异常"
+            echo "    3. --no-push 被指定"
             echo "═══════════════════════════════════════"
-            # 列出最近的日志输出帮助排查
-            echo ""
-            echo "最近30行运行输出："
-            tail -n 30 /tmp/step_output.txt 2>/dev/null || echo "(无缓存输出)"
           fi
+
+      - name: 打印校准状态
+        if: always()
+        run: python main.py stats || true
+
+      - name: 打印系统健康度
+        if: always()
+        run: python main.py health || true

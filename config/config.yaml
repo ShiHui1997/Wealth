@@ -1,57 +1,26 @@
-# 大乐透预测系统配置
-
-# 开奖数据手机提交链接（推送消息底部会附带）
-# 部署 web/submit.html 后填入实际地址
 submit:
-  url: "https://83295fe294884faebe5bfffee0f30c84.app.codebuddy.work/submit.html"
-
-# 推送配置 (PushPlus)
+  url: https://83295fe294884faebe5bfffee0f30c84.app.codebuddy.work/submit.html
 pushplus:
-  token: "5061c14a3f6e4a82abb0fc9f11879aff"  # 在这里填写你的 PushPlus token
-  api_url: "http://www.pushplus.plus/send"
-
-# 数据库配置
+  token: test_token_from_env_12345
+  api_url: http://www.pushplus.plus/send
 database:
-  path: "data/daletou.db"
-
-# 数据获取配置
+  path: data/daletou.db
 data_source:
-  # 数据源：中国体彩官方API (webapi.sporttery.cn)
-  # 请求间隔 (秒) — 全量获取时分页请求的间隔，避免频率限制
   request_delay: 0.5
-
-# 预测配置
 prediction:
-  # 推荐注数
   recommend_count: 3
-  # 生成候选注数 (用于筛选最相似的，建议 >= 1000 以保证覆盖度)
   candidate_count: 2000
-  # 随机种子（确保结果可复现）
-  # ⚠️ 以下字段已废弃：种子现在由系统自动管理
-  #     首次运行使用种子=42，每次校准后自动轮换（42 + 校准次数×7）
-  #     当前种子值存储在数据库的 calibration 表中（param_name='current_seed'）
-  random_seed: 42  # 仅首次运行前生效，之后由数据库覆盖
-  # 前区号码范围
+  random_seed: 42
   front_min: 1
   front_max: 35
   front_count: 5
-  # 后区号码范围
   back_min: 1
   back_max: 12
   back_count: 2
-
-# 调度配置
 schedule:
-  # 预测时间 (周一/三/六 19:30)
-  predict_time: "19:30"
-  # 时区
-  timezone: "Asia/Shanghai"
-
-# 分析配置
+  predict_time: '19:30'
+  timezone: Asia/Shanghai
 analysis:
-  # 用于分析的最近期数
   recent_periods: 100
-  # 热号统计期数
   hot_periods: 30
-  # 批次回归分析时的每批期数
   batch_size: 50

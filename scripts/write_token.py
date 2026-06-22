@@ -9,7 +9,8 @@ import os
 
 
 def main():
-    token = sys.argv[1] if len(sys.argv) > 1 else ""
+    # 优先从命令行参数读取，否则从环境变量读取
+    token = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("PUSHPLUS_TOKEN", "")
     cfg_path = "config/config.yaml"
 
     with open(cfg_path) as f:
