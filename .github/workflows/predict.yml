@@ -105,6 +105,74 @@ jobs:
             echo "❌ 数据库文件不存在"
           fi
 
+      - name: 推送连通性测试（关键诊断步骤）
+        env:
+          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+        run: |
+          echo "═══════════════════════════════════════"
+          echo "  PushPlus API 连通性测试"
+          echo "═══════════════════════════════════════"
+          python -c "
+          import json, urllib.request, ssl, os
+
+          token = os.environ.get('PUSHPLUS_TOKEN', '')
+          print(f'Token长度: {len(token)}')
+          print(f'Token非空: {bool(token)}')
+
+          if not token:
+              print('❌ Token为空！无法测试')
+              exit(1)
+
+          # 测试1: DNS解析
+          import socket
+          print()
+          print('[测试1] DNS解析 www.pushplus.plus ...')
+          try:
+              ip = socket.gethostbyname('www.pushplus.plus')
+              print(f'  DNS解析成功: {ip}')
+          except Exception as e:
+              print(f'  ❌ DNS解析失败: {e}')
+              exit(1)
+
+          # 测试2: HTTPS连接
+          print()
+          print('[测试2] HTTPS连接 https://www.pushplus.plus/send ...')
+          try:
+              ctx = ssl.create_default_context()
+              req = urllib.request.Request(
+                  'https://www.pushplus.plus/send',
+                  data=json.dumps({
+                      'token': token,
+                      'title': '🔧 连通性测试 - Actions环境',
+                      'content': '<p>如果你收到这条消息，说明GitHub Actions → PushPlus → 微信链路畅通</p>',
+                      'template': 'html',
+                  }).encode('utf-8'),
+                  headers={'Content-Type': 'application/json'},
+                  method='POST'
+              )
+              resp = urllib.request.urlopen(req, timeout=30, context=ctx)
+              body = resp.read().decode('utf-8')
+              result = json.loads(body)
+              print(f'  响应状态码: {resp.status}')
+              print(f'  API响应: {result}')
+              if result.get('code') == 200:
+                  print(f'  ✅ 推送发送成功！（请检查手机微信）')
+              else:
+                  print(f'  ❌ API返回错误: {result}')
+                  exit(1)
+          except urllib.error.URLError as e:
+              print(f'  ❌ 连接错误(URLError): {e.reason}')
+              exit(1)
+          except urllib.error.HTTPError as e:
+              print(f'  ❌ HTTP错误: {e.code} {e.reason}')
+              exit(1)
+          except Exception as e:
+              print(f'  ❌ 异常: {type(e).__name__}: {e}')
+              exit(1)
+
+          print()
+          echo '═══════════════════════════════════════'
+
       # ═══════════════════════════════════════════
       # 完整运行：获取+验证+校准+预测+推送
       # ═══════════════════════════════════════════

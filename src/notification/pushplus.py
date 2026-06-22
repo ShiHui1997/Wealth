@@ -1,16 +1,17 @@
 """
 PushPlus 推送模块
 文档: http://www.pushplus.plus/doc/
+使用 urllib（Python标准库）避免Actions环境依赖问题
 """
-import requests
 import json
-from typing import Optional
+import urllib.request
+import ssl
 
 
 class PushPlusNotifier:
     """PushPlus 消息推送器"""
 
-    def __init__(self, token: str, api_url: str = "http://www.pushplus.plus/send"):
+    def __init__(self, token: str, api_url: str = "https://www.pushplus.plus/send"):
         self.token = token
         self.api_url = api_url
 
@@ -30,22 +31,35 @@ class PushPlusNotifier:
             "template": content_type,  # html 或 text
         }
 
+        # 详细调试日志
+        print(f"[推送] API URL: {self.api_url}")
+        print(f"[推送] 标题: {title}")
+        print(f"[推送] 内容长度: {len(content)} 字符")
+
         try:
-            resp = requests.post(
+            data = json.dumps(payload).encode('utf-8')
+            req = urllib.request.Request(
                 self.api_url,
+                data=data,
                 headers={"Content-Type": "application/json"},
-                data=json.dumps(payload),
-                timeout=10
+                method='POST'
             )
-            result = resp.json()
+            # 使用HTTPS + 较长超时（GitHub Actions在美国，到国内API延迟较高）
+            ctx = ssl.create_default_context()
+            resp = urllib.request.urlopen(req, timeout=30, context=ctx)
+            body = resp.read().decode('utf-8')
+            result = json.loads(body)
+
+            print(f"[推送] API响应: {result}")
+
             if result.get("code") == 200:
-                print(f"[推送] 发送成功: {result.get('msg', '')}")
+                print(f"[推送] ✅ 发送成功: {result.get('msg', '')}")
                 return True
             else:
-                print(f"[推送] 发送失败: {result}")
+                print(f"[推送] ❌ 发送失败: {result}")
                 return False
         except Exception as e:
-            print(f"[推送] 请求异常: {e}")
+            print(f"[推送] ❌❌ 请求异常: {type(e).__name__}: {e}")
             return False
 
     def send_prediction(self, prediction: str, issue: str = "") -> bool:
