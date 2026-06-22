@@ -169,8 +169,15 @@ class DaletouPredictor:
         return "\n".join(lines)
 
     def format_prediction_html(self, prediction: List[Tuple[Dict, float]],
-                                submit_url: str = "") -> str:
+                                submit_url: str = "", issue: str = "") -> str:
         """格式化为HTML（适合PushPlus推送，手机端优化）"""
+        from datetime import datetime, timezone, timedelta
+
+        # 每次生成唯一内容（避免PushPlus反垃圾code=999）
+        bj = datetime.now(timezone(timedelta(hours=8)))
+        ts = bj.strftime('%m-%d %H:%M')
+        issue_tag = f" 第{issue}期" if issue else ""
+
         rows = ""
         for i, (nums, score) in enumerate(prediction, 1):
             front_str = " ".join(f"{n:02d}" for n in nums["front"])
@@ -205,7 +212,8 @@ class DaletouPredictor:
 
         return f"""
         <div style="font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;padding:16px;max-width:100%;overflow-x:auto;">
-            <h2 style="color:#2c3e50;font-size:18px;margin-bottom:4px;">🎯 大乐透本期预测</h2>
+            <h2 style="color:#2c3e50;font-size:18px;margin-bottom:4px;">🎯 大乐透{issue_tag}预测</h2>
+            <p style="color:#aaa;font-size:11px;margin-bottom:12px;">生成于 {ts} (北京时间)</p>
             <p style="color:#888;font-size:13px;margin-bottom:14px;">
                 基于历史开奖数据的相似度分析，以下3注与真实开奖随机性最为接近：
             </p>

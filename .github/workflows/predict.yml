@@ -64,77 +64,93 @@ jobs:
           fi
 
       # ═══════════════════════════════════════════
-      # 写入Token + 推送预检（一步完成，失败则终止）
+      # 步骤A：写入Token（必须成功）
       # ═══════════════════════════════════════════
-      - name: 写入Token并验证推送通道
+      - name: 写入Token到config
         env:
           PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
         run: |
-          echo "═══════════════════════════════════════"
-          echo "  Token写入 + 推送通道预检"
-          echo "═══════════════════════════════════════"
-
-          # 1. 写入Token到config.yaml
           python scripts/write_token.py
-          echo ""
-
-          # 2. 验证config中的Token
           TOKEN_LEN=$(python -c "
           import yaml
           with open('config/config.yaml') as f:
               cfg = yaml.safe_load(f)
-          t = cfg.get('pushplus', {}).get('token', '')
-          print(len(t))
+          print(len(cfg.get('pushplus', {}).get('token', '')))
           ")
-          echo "✅ config.yaml中Token长度: $TOKEN_LEN"
-
+          echo "✅ Token已写入，长度: $TOKEN_LEN"
           if [ "$TOKEN_LEN" -lt 10 ]; then
-              echo "❌ Token过短或为空！"
-              exit 1
+            echo "❌ Token过短！"
+            exit 1
           fi
 
-          # 3. 推送通道预检：发一条极简测试消息
-          echo ""
-          echo "[预检] 发送测试消息到PushPlus..."
+      # ═══════════════════════════════════════════
+      # 步骤B：推送预检（尽力而为，不阻断主流程）
+      # code=999 反垃圾 → 警告但继续（主流程内容不同不会被拦）
+      # 真正的网络错误/token错误 → 也只警告，不阻断
+      # 预检只是辅助诊断，预测才是核心任务
+      # ═══════════════════════════════════════════
+      - name: 推送通道预检（非阻塞）
+        if: always()
+        run: |
+          echo "═══════════════════════════════════════"
+          echo "  推送预检（失败不阻断主流程）"
+          echo "═══════════════════════════════════════"
+
           python -c "
           import json, urllib.request, ssl, os, yaml
+          from datetime import datetime, timezone, timedelta
 
-          # 从config读取token（和主流程一致）
           with open('config/config.yaml') as f:
               cfg = yaml.safe_load(f)
           token = cfg.get('pushplus', {}).get('token', '')
 
+          # 带时间戳+Run ID确保每次内容唯一（避免PushPlus反垃圾code=999）
+          bj = datetime.now(timezone(timedelta(hours=8)))
+          ts = bj.strftime('%m-%d %H:%M')
+          rid = os.environ.get('GITHUB_RUN_ID', '?')
+
           payload = {
               'token': token,
-              'title': '🔧 预检测试 - 请忽略',
-              'content': '<p>预测系统启动预检，如果你收到这条消息说明推送链路畅通 ✅</p>',
+              'title': f'🔧 预检 {ts} #{rid}',
+              'content': f'<p>预检通过 ✅ | Run #{rid} | {ts}</p>',
               'template': 'html',
           }
-          ctx = ssl.create_default_context()
-          req = urllib.request.Request(
-              'https://www.pushplus.plus/send',
-              data=json.dumps(payload).encode('utf-8'),
-              headers={'Content-Type': 'application/json'},
-              method='POST'
-          )
-          resp = urllib.request.urlopen(req, timeout=30, context=ctx)
-          body = json.loads(resp.read().decode('utf-8'))
-          print(f'API响应: {body}')
-          if body.get('code') == 200:
-              print('✅ 预检推送成功！（手机应收到「🔧 预检测试」消息）')
-          else:
-              print(f'❌ API返回错误: {body}')
-              exit(1)
+
+          try:
+              ctx = ssl.create_default_context()
+              req = urllib.request.Request(
+                  'https://www.pushplus.plus/send',
+                  data=json.dumps(payload).encode('utf-8'),
+                  headers={'Content-Type': 'application/json'},
+                  method='POST'
+              )
+              resp = urllib.request.urlopen(req, timeout=30, context=ctx)
+              body = json.loads(resp.read().decode('utf-8'))
+              code = body.get('code', -1)
+
+              if code == 200:
+                  print(f'✅ 预检成功: {body.get(\"msg\", \"\")}')
+              elif code == 999:
+                  print(f'⚠️ 预检被反垃圾拦截(code=999): {body.get(\"msg\", \"\")}')
+                  print('   原因：短时间内推送了相似内容')
+                  print('   ⚠️  不影响主流程！预测消息内容不同，可正常发送')
+              else:
+                  print(f'⚠️ API返回异常(code={code}): {body}')
+                  print('   ⚠️  不阻断主流程，继续执行预测...')
+          except Exception as e:
+              print(f'⚠️ 预检请求异常: {type(e).__name__}: {e}')
+              print('   ⚠️  不阻断主流程，继续执行预测...')
+
+          print('')
+          print('═══════════════════════════════════════')
           "
 
-          echo ""
-          echo "═══════════════════════════════════════"
-
       # ═══════════════════════════════════════════
-      # 主运行流程
+      # 主运行流程（核心步骤，无论预检结果都执行）
       # ═══════════════════════════════════════════
       - name: 完整运行（获取最新开奖 + 验证上期 + 校准 + 预测下期 + 推送）
         id: main-run
+        if: always()  # 无论预检是否成功都执行
         run: python main.py run
 
       # ═══════════════════════════════════════════

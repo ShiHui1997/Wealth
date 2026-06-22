@@ -348,7 +348,7 @@ def cmd_predict(args, config):
             _write_diagnostic("push_phase", "creating_notifier")
             notifier = PushPlusNotifier(token)
             submit_url = config.get("submit", {}).get("url", "")
-            html_content = predictor.format_prediction_html(prediction, submit_url=submit_url)
+            html_content = predictor.format_prediction_html(prediction, submit_url=submit_url, issue=next_issue)
 
             _write_diagnostic("html_content_length", len(html_content))
             print(f"[推送] HTML内容长度: {len(html_content)} 字符")

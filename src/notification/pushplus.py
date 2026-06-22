@@ -96,7 +96,10 @@ class PushPlusNotifier:
 
     def send_prediction(self, prediction: str, issue: str = "") -> bool:
         """发送预测结果（专用格式）"""
-        title = f"🎯 大乐透预测 {issue}" if issue else "🎯 大乐透预测"
+        from datetime import datetime, timezone, timedelta
+        bj = datetime.now(timezone(timedelta(hours=8)))
+        ts = bj.strftime('%m/%d %H:%M')
+        title = f"🎯 大乐透预测 {issue} ({ts})" if issue else f"🎯 大乐透预测 ({ts})"
         return self.send(title, prediction, content_type="html")
 
     def send_text(self, title: str, content: str) -> bool:
