@@ -307,10 +307,20 @@ def cmd_predict(args, config):
 
     # 推送到PushPlus
     if not getattr(args, 'no_push', False):
-        notifier = PushPlusNotifier(config["pushplus"]["token"])
-        submit_url = config.get("submit", {}).get("url", "")
-        html_content = predictor.format_prediction_html(prediction, submit_url=submit_url)
-        notifier.send_prediction(html_content, next_issue)
+        token = config.get("pushplus", {}).get("token", "")
+        print(f"[推送] PushPlus Token: {'已配置 ({}字符)'.format(len(token)) if token else '❌ 未配置/为空!'}")
+
+        if not token:
+            print("[推送] ⚠️ Token为空，跳过推送！请检查Secrets中PUSHPLUS_TOKEN是否正确设置")
+        else:
+            notifier = PushPlusNotifier(token)
+            submit_url = config.get("submit", {}).get("url", "")
+            html_content = predictor.format_prediction_html(prediction, submit_url=submit_url)
+            success = notifier.send_prediction(html_content, next_issue)
+            if not success:
+                print("[推送] ❌ 推送发送失败！检查Token是否有效: http://www.pushplus.plus/")
+            else:
+                print(f"[推送] ✅ 第{next_issue}期预测已推送到微信")
     else:
         submit_url = config.get("submit", {}).get("url", "")
         print(f"[预测] --no-push 已指定，跳过推送")

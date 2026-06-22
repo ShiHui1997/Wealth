@@ -38,9 +38,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: data/daletou.db
-          key: daletou-db-${{ github.run_id }}
+          key: daletou-db-${{ runner.os }}-py311-${{ hashFiles('**/requirements.txt') }}
           restore-keys: |
-            daletou-db-
+            daletou-db-${{ runner.os }}-py311-
 
       - name: 缓存未命中时初始化数据库
         if: steps.cache-db.outputs.cache-hit != 'true'

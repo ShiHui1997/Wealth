@@ -36,9 +36,10 @@ jobs:
         uses: actions/cache@v4
         with:
           path: data/daletou.db
-          key: daletou-db-${{ github.run_id }}
+          # 使用稳定key：基于分支名，同分支复用同一缓存
+          key: daletou-db-${{ runner.os }}-py311-${{ hashFiles('**/requirements.txt') }}
           restore-keys: |
-            daletou-db-
+            daletou-db-${{ runner.os }}-py311-
 
       - name: 缓存未命中时初始化数据库
         if: steps.cache-db.outputs.cache-hit != 'true'
@@ -72,11 +73,37 @@ jobs:
           cfg_path = 'config/config.yaml'
           with open(cfg_path) as f:
               cfg = yaml.safe_load(f)
-          cfg['pushplus']['token'] = os.environ['PUSHPLUS_TOKEN']
+          token = os.environ.get('PUSHPLUS_TOKEN', '')
+          cfg['pushplus']['token'] = token
           with open(cfg_path, 'w') as f:
               yaml.dump(cfg, f, allow_unicode=True, sort_keys=False)
-          print('PushPlus token 已写入配置')
+          print(f'PushPlus token 已写入配置 (长度: {len(token)})')
+          if not token:
+              print('⚠️ WARNING: PUSHPLUS_TOKEN 环境变量为空!')
+              exit(1)
           "
+
+      - name: 验证Token和数据库状态
+        run: |
+          echo "=== 配置验证 ==="
+          python -c "
+          import yaml
+          with open('config/config.yaml') as f:
+              cfg = yaml.safe_load(f)
+          token = cfg.get('pushplus', {}).get('token', '')
+          print(f'Token长度: {len(token)}')
+          print(f'Token状态: {\"✅ 已配置\" if token else \"❌ 为空\"} ')
+          "
+          echo "=== 数据库验证 ==="
+          if [ -f data/daletou.db ]; then
+            COUNT=$(python -c "import sqlite3; print(sqlite3.connect('data/daletou.db').execute('SELECT COUNT(*) FROM draws').fetchone()[0])")
+            echo "数据期数: $COUNT"
+            if [ "$COUNT" -lt 10 ]; then
+              echo "❌ 数据不足，预测将提前退出!"
+            fi
+          else
+            echo "❌ 数据库文件不存在"
+          fi
 
       # ═══════════════════════════════════════════
       # 完整运行：获取+验证+校准+预测+推送
