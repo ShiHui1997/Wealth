@@ -216,17 +216,32 @@ jobs:
           echo "═══════════════════════════════════════"
           if [ -f push_result.json ]; then
             python -c "
-          import json
+          import json, sys
           with open('push_result.json') as f:
               r = json.load(f)
           status = r.get('status', 'unknown')
           issue = r.get('issue', '?')
           reason = r.get('reason', '')
+          error_type = r.get('error_type', '')
+          detail = r.get('error_detail', '')
+          api_resp = r.get('api_response', {})
           icons = {'success': '✅', 'failed': '❌'}
           print(f'  推送状态: {icons.get(status, \"⚠️\")} {status}')
           print(f'  预测期号: {issue}')
           if reason:
               print(f'  失败原因: {reason}')
+          if error_type:
+              print(f'  异常类型: {error_type}')
+          if detail:
+              print(f'  详细信息: {detail[:300]}')
+          if api_resp:
+              print(f'  API响应: {api_resp}')
+
+          # 如果推送失败，以非零退出 → 让此步骤变红
+          if status != 'success':
+              print('')
+              print('  ⛔ 推送未成功！此步骤将以失败状态退出')
+              sys.exit(1)
           "
             echo "═══════════════════════════════════════"
           else
@@ -236,6 +251,7 @@ jobs:
             echo "    2. 运行过程中发生未捕获异常"
             echo "    3. --no-push 被指定"
             echo "═══════════════════════════════════════"
+            echo "::warning::push_result.json 不存在，可能未执行推送"
           fi
 
       - name: 打印校准状态

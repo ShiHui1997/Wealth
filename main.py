@@ -315,21 +315,42 @@ def cmd_predict(args, config):
         if not token:
             print("[推送] ⚠️ Token为空，跳过推送！请检查Secrets中PUSHPLUS_TOKEN是否正确设置")
             push_result = "FAILED_NO_TOKEN"
-            # 写入推送结果文件供工作流检查
             _write_push_result({"status": "failed", "reason": "token_empty", "issue": next_issue})
+            print("[推送] ⛔ 因Token为空，以退出码1退出（让GitHub Actions显示失败）")
+            sys.exit(1)
         else:
             notifier = PushPlusNotifier(token)
             submit_url = config.get("submit", {}).get("url", "")
             html_content = predictor.format_prediction_html(prediction, submit_url=submit_url)
-            success = notifier.send_prediction(html_content, next_issue)
-            if not success:
-                print("[推送] ❌ 推送发送失败！检查Token是否有效: http://www.pushplus.plus/")
-                push_result = "FAILED_API_ERROR"
-                _write_push_result({"status": "failed", "reason": "api_error", "issue": next_issue})
-            else:
-                print(f"[推送] ✅ 第{next_issue}期预测已推送到微信")
-                push_result = "SUCCESS"
-                _write_push_result({"status": "success", "issue": next_issue})
+            print(f"[推送] HTML内容长度: {len(html_content)} 字符")
+            try:
+                success = notifier.send_prediction(html_content, next_issue)
+                if success:
+                    print(f"[推送] ✅ 第{next_issue}期预测已推送到微信")
+                    push_result = "SUCCESS"
+                    _write_push_result({"status": "success", "issue": next_issue})
+                else:
+                    # 理论上走不到这里（send_prediction 失败会抛异常）
+                    print("[推送] ❌ 推送返回False（不应走到这里）")
+                    push_result = "FAILED_UNEXPECTED"
+                    _write_push_result({"status": "failed", "reason": "unexpected_false", "issue": next_issue})
+                    sys.exit(1)
+            except Exception as e:
+                # PushPlusError 或其他异常 → 推送失败
+                error_type = type(e).__name__
+                error_reason = getattr(e, 'reason', str(e))
+                print(f"[推送] ❌❌ 推送异常: {error_type}: {e}")
+                print(f"[推送] ⛔ 推送失败，以退出码1退出")
+                push_result = f"FAILED_EXCEPTION:{error_type}"
+                _write_push_result({
+                    "status": "failed",
+                    "reason": error_reason,
+                    "error_type": error_type,
+                    "error_detail": str(e)[:500],
+                    "api_response": getattr(e, 'api_response', {}),
+                    "issue": next_issue
+                })
+                sys.exit(1)
             print("=" * 50)
     else:
         push_result = "NO_PUSH_FLAG"
