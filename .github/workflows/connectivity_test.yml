@@ -1,0 +1,126 @@
+name: 推送服务连通性测试
+
+on:
+  workflow_dispatch:  # 仅手动触发
+
+jobs:
+  connectivity-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 设置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 全方位网络连通性测试
+        env:
+          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+        run: |
+          python3 << 'PYEOF'
+          import json, urllib.request, ssl, socket, time, os
+
+          def test_dns(host):
+              try:
+                  ip = socket.gethostbyname(host)
+                  return True, ip
+              except Exception as e:
+                  return False, str(e)
+
+          def test_https(url, payload=None, method="GET", timeout=15):
+              try:
+                  data = json.dumps(payload).encode('utf-8') if payload else None
+                  req = urllib.request.Request(url, data=data, method=method)
+                  if payload:
+                      req.add_header('Content-Type', 'application/json')
+                  ctx = ssl.create_default_context()
+                  start = time.time()
+                  resp = urllib.request.urlopen(req, timeout=timeout, context=ctx)
+                  elapsed = time.time() - start
+                  body = resp.read().decode('utf-8', errors='replace')
+                  return True, {"status": resp.status, "time": round(elapsed, 2), "body_body": body[:300]}
+              except urllib.error.HTTPError as e:
+                  body = ""
+                  try:
+                      body = e.read().decode('utf-8', errors='replace')[:200]
+                  except:
+                      pass
+                  return False, {"status": e.code, "reason": str(e.reason), "body_body": body}
+              except Exception as e:
+                  return False, {"error": f"{type(e).__name__}: {e}"}
+
+          def report(name, ok, detail):
+              icon = "✅" if ok else "❌"
+              print(f"  {icon} {name}")
+              if isinstance(detail, dict):
+                  for k, v in detail.items():
+                      if k != 'body_body':
+                          print(f"     {k}: {v}")
+              else:
+                  print(f"     -> {detail}")
+
+          print("=" * 60)
+          print("  推送服务连通性测试 - GitHub Actions (美国Azure)")
+          print("=" * 60)
+
+          # ===== 1. DNS解析 =====
+          print("\n[1] DNS解析")
+          domains = [
+              ("PushPlus", "www.pushplus.plus"),
+              ("Server酱", "sctapi.ftqq.com"),
+              ("Telegram", "api.telegram.org"),
+              ("Bark", "api.day.app"),
+              ("PushDeer", "api.pushdeer.com"),
+              ("GitHub API", "api.github.com"),
+              ("Google", "www.google.com"),
+              ("百度", "www.baidu.com"),
+          ]
+          for name, host in domains:
+              ok, info = test_dns(host)
+              report(name, ok, info)
+
+          # ===== 2. HTTPS可达性 =====
+          print("\n[2] HTTPS端点可达性")
+
+          token = os.environ.get('PUSHPLUS_TOKEN', '')
+          if token:
+              ok, info = test_https(
+                  'https://www.pushplus.plus/send',
+                  {'token': token, 'title': 'Actions Test', 'content': '<p>test</p>', 'template': 'html'},
+                  method='POST'
+              )
+              report("PushPlus(带Token发送)", ok, info)
+          else:
+              report("PushPlus", None, "无Token跳过")
+
+          endpoints = [
+              ("Server酱 GET", "https://sctapi.ftqq.com/test", "GET"),
+              ("Telegram Bot", "https://api.telegram.org/bot123/getMe", "GET"),
+              ("Bark推送", "https://api.day.app/test/title/body", "GET"),
+              ("PushDeer", "https://api.pushdeer.com/message/push?pushkey=test&text=test", "GET"),
+          ]
+          for name, url in endpoints:
+              m = url.split()[0] if len(url.split()) > 1 else "GET"
+              ok, info = test_https(url, method=m, timeout=10)
+              report(name, ok, info)
+
+          # ===== 3. 延迟对比 =====
+          print("\n[3] 延迟对比 (HEAD请求)")
+          latency_tests = [
+              ("GitHub API(美)", "https://api.github.com/"),
+              ("Google(全球)", "https://www.google.com"),
+              ("PushPlus(中)", "https://www.pushplus.plus/"),
+              ("Server酱(中)", "https://sctapi.ftqq.com/"),
+          ]
+          for name, url in latency_tests:
+              ok, info = test_https(url, method="HEAD", timeout=10)
+              if ok and 'time' in info:
+                  report(name, ok, f"{info['time']}s")
+              elif not ok:
+                  err = info.get('error', info.get('reason', '?'))
+                  report(name, ok, err)
+
+          # ===== 4. 结论 =====
+          print("\n" + "=" * 60)
+          print("  测试完成 - 请根据结果选择方案")
+          print("=" * 60)
+          PYEOF
