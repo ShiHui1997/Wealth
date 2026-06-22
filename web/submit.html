@@ -68,7 +68,6 @@
     }
     .row .form-group { flex: 1; }
 
-    /* 前区5个号 */
     .front-inputs { display: flex; gap: 6px; }
     .front-inputs input {
       flex: 1;
@@ -77,7 +76,6 @@
       aspect-ratio: 1;
       border-radius: 8px;
     }
-    /* 后区2个号 */
     .back-inputs { display: flex; gap: 10px; }
     .back-inputs input {
       flex: 1;
@@ -114,11 +112,11 @@
       margin-top: 8px;
       transition: transform 0.1s, box-shadow 0.2s;
     }
-    .btn-submit:active {
-      transform: scale(0.97);
-    }
-    .btn-submit:hover {
-      box-shadow: 0 6px 20px rgba(231,76,60,0.4);
+    .btn-submit:active { transform: scale(0.97); }
+    .btn-submit:hover { box-shadow: 0 6px 20px rgba(231,76,60,0.4); }
+    .btn-submit:disabled {
+      background: #999;
+      cursor: not-allowed;
     }
 
     .footer {
@@ -129,14 +127,63 @@
     }
     .footer a { color: #4a90d9; text-decoration: none; }
 
-    /* 号码示例提示 */
-    .example {
-      background: #f8f9fa;
-      border-radius: 8px;
-      padding: 8px 12px;
-      margin-top: 6px;
+    /* Token 输入区 */
+    .token-section {
+      background: #f0f4ff;
+      border-radius: 10px;
+      padding: 14px;
+      margin-bottom: 18px;
+    }
+    .token-section input {
+      font-size: 13px;
+      letter-spacing: 0;
+      text-align: left;
+      font-weight: normal;
+      font-family: monospace;
+    }
+    .token-section label {
+      font-size: 13px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      cursor: pointer;
+    }
+    .token-section input[type="checkbox"] {
+      width: auto;
+      accent-color: #4a90d9;
+    }
+    .token-toggle {
       font-size: 12px;
-      color: #888;
+      color: #4a90d9;
+      cursor: pointer;
+      margin-top: 4px;
+      display: inline-block;
+    }
+
+    /* 结果反馈 */
+    .result-msg {
+      display: none;
+      border-radius: 10px;
+      padding: 12px 16px;
+      margin-top: 12px;
+      font-size: 14px;
+      text-align: center;
+    }
+    .result-msg.success {
+      display: block;
+      background: #d4edda;
+      color: #155724;
+      border: 1px solid #c3e6cb;
+    }
+    .result-msg.error {
+      display: block;
+      background: #f8d7da;
+      color: #721c24;
+      border: 1px solid #f5c6cb;
+    }
+    .result-msg a {
+      color: #155724;
+      font-weight: 600;
     }
   </style>
 </head>
@@ -145,9 +192,19 @@
     <h1>🎯 大乐透开奖数据</h1>
     <p class="subtitle">填写最新一期开奖号码，提交后自动更新预测系统</p>
 
+    <!-- Token 配置区 -->
+    <div class="token-section" id="tokenSection">
+      <label>🔑 GitHub Token <span class="hint">（首次使用需填，勾选记住后自动保存）</span></label>
+      <input type="password" id="githubToken" placeholder="github_pat_ 开头或 ghp_ 开头" autocomplete="off" style="margin-top:6px;">
+      <label style="margin-top:8px;">
+        <input type="checkbox" id="rememberToken"> 记住Token（下次自动填充）
+      </label>
+      <span class="token-toggle" onclick="toggleTokenVisibility()">显示/隐藏 Token</span>
+    </div>
+
     <div class="form-group">
-      <label>期号 <span class="hint">（如 26068）</span></label>
-      <input type="text" id="issue" placeholder="26068" maxlength="7" autocomplete="off">
+      <label>期号 <span class="hint">（如 26070）</span></label>
+      <input type="text" id="issue" placeholder="26070" maxlength="7" autocomplete="off">
     </div>
 
     <div class="form-group">
@@ -171,25 +228,52 @@
       </div>
     </div>
 
-    <button class="btn-submit" onclick="submitData()">提交开奖号码</button>
+    <button class="btn-submit" onclick="submitData()" id="submitBtn">提交开奖号码</button>
+
+    <div class="result-msg" id="resultMsg"></div>
 
     <p class="footer">
-      提交后将在 GitHub 创建 Issue，系统自动处理 ·
+      提交后自动触发 GitHub Actions 处理 ·
       <a href="https://github.com/ShiHui1997/Wealth" target="_blank">查看仓库</a>
     </p>
   </div>
 
 <script>
-// 自动跳到下一个输入框（修复 number 类型在手机端的兼容性）
-document.querySelectorAll('input').forEach(function(el) {
+// ══════════════════════════════════════════
+// Token 管理
+// ══════════════════════════════════════════
+var STORAGE_KEY = 'wealth_github_token';
+
+// 页面加载时自动填充已保存的 token
+(function loadToken() {
+  var saved = localStorage.getItem(STORAGE_KEY);
+  if (saved) {
+    document.getElementById('githubToken').value = saved;
+    document.getElementById('rememberToken').checked = true;
+  }
+})();
+
+function toggleTokenVisibility() {
+  var input = document.getElementById('githubToken');
+  input.type = input.type === 'password' ? 'text' : 'password';
+}
+
+// ══════════════════════════════════════════
+// 输入框自动跳转
+// ══════════════════════════════════════════
+document.querySelectorAll('#frontInputs input, #backInputs input').forEach(function(el) {
   el.addEventListener('input', function() {
     var val = this.value;
-    // number 输入框：前区最多2位数(01-35)，后区最多2位数(01-12)
     var maxLen = 2;
     if (val.length >= maxLen) {
-      var inputs = Array.from(document.querySelectorAll('input'));
+      var container = this.closest('.front-inputs') || this.closest('.back-inputs');
+      var inputs = Array.from(container.querySelectorAll('input'));
       var idx = inputs.indexOf(this);
       if (idx < inputs.length - 1) inputs[idx + 1].focus();
+      else {
+        // 后区最后一个填完后，跳到提交按钮
+        document.getElementById('submitBtn').focus();
+      }
     }
   });
 });
@@ -198,46 +282,127 @@ function getValues(containerId, count) {
   var vals = [];
   for (var i = 0; i < count; i++) {
     var el = document.querySelector('#' + containerId + ' input[data-idx="' + i + '"]');
-    var v = (el && el.value) ? String(el.value).padStart(2, '0') : '';
+    var v = (el && el.value) ? String(parseInt(el.value)).padStart(2, '0') : '';
+    if (parseInt(el.value) < 1) v = '';
     vals.push(v);
   }
   return vals;
 }
 
+function showResult(msg, isSuccess) {
+  var el = document.getElementById('resultMsg');
+  el.className = 'result-msg ' + (isSuccess ? 'success' : 'error');
+  el.innerHTML = msg;
+  el.scrollIntoView({ behavior: 'smooth' });
+}
+
+// ══════════════════════════════════════════
+// 提交（直接调用 GitHub API 创建 Issue）
+// ══════════════════════════════════════════
 function submitData() {
-  var btn = document.querySelector('.btn-submit');
+  var btn = document.getElementById('submitBtn');
+  var token = document.getElementById('githubToken').value.trim();
   var issue = document.getElementById('issue').value.trim();
+
+  // 保存/清除 token
+  if (document.getElementById('rememberToken').checked) {
+    localStorage.setItem(STORAGE_KEY, token);
+  } else {
+    localStorage.removeItem(STORAGE_KEY);
+  }
+
+  if (!token) { alert('请先填写 GitHub Token'); return; }
   if (!issue) { alert('请输入期号'); return; }
 
   var front = getValues('frontInputs', 5);
-  if (front.some(function(v){return !v;})) { alert('请填完前区5个号码'); return; }
+  if (front.some(function(v){return !v;})) { alert('请填完前区5个号码（01-35）'); return; }
+  // 校验范围
+  for (var i = 0; i < 5; i++) {
+    var n = parseInt(front[i]);
+    if (n < 1 || n > 35) { alert('前区号码必须在 01-35 之间'); return; }
+  }
+  // 检查重复
+  if (new Set(front).size !== 5) { alert('前区号码不能重复'); return; }
 
   var back = getValues('backInputs', 2);
-  if (back.some(function(v){return !v;})) { alert('请填完后区2个号码'); return; }
+  if (back.some(function(v){return !v;})) { alert('请填完后区2个号码（01-12）'); return; }
+  for (var i = 0; i < 2; i++) {
+    var n = parseInt(back[i]);
+    if (n < 1 || n > 12) { alert('后区号码必须在 01-12 之间'); return; }
+  }
+  if (back[0] === back[1]) { alert('后区号码不能重复'); return; }
 
-  // 构造 GitHub Issue 的标题和正文
-  var title = '\u5F00\u5956\u63D0\u4EA4 ' + issue;
+  // 排序
+  front.sort(function(a,b){return parseInt(a)-parseInt(b);});
+  back.sort(function(a,b){return parseInt(a)-parseInt(b);});
 
-  // 用特殊格式标记，方便 Actions 解析
-  // 格式：<!-- DLT_SUBMIT -->\n## 期号: xxx\n## 前区: xx xx xx xx xx\n## 后区: xx xx
-  var body = '';
-  body += '<!-- DLT_SUBMIT -->\n';
-  body += '\n### \u26FA \u671F\u53F7: **' + issue + '**\n';
-  body += '\n| \u533A\u57DF | \u53F7\u7801 |\n|---|---|\n';
-  body += '| \u524D\u533A | ' + front.join(' ') + ' |\n';
-  body += '| \u540E\u533A | ' + back.join(' ') + ' |\n';
+  // 构造 Issue
+  var title = '开奖提交 ' + issue;
+  var body = '<!-- DLT_SUBMIT -->\n';
+  body += '\n### 🏠 期号: **' + issue + '**\n';
+  body += '\n| 区域 | 号码 |\n|---|---|\n';
+  body += '| 前区 | ' + front.join(' ') + ' |\n';
+  body += '| 后区 | ' + back.join(' ') + ' |\n';
 
-  // 直接跳转到 GitHub Issue 创建页（window.open 在手机端/iframe 中会被拦截）
-  var url = 'https://github.com/ShiHui1997/Wealth/issues/new'
-    + '?title=' + encodeURIComponent(title)
-    + '&body=' + encodeURIComponent(body);
-
-  // 加视觉反馈
-  btn.textContent = '⏳ 正在跳转...';
-  btn.style.background = '#999';
+  // 按钮状态
+  btn.textContent = '⏳ 正在提交...';
   btn.disabled = true;
+  document.getElementById('resultMsg').className = 'result-msg';
+  document.getElementById('resultMsg').innerHTML = '';
 
-  window.location.href = url;
+  // 调用 GitHub API
+  fetch('https://api.github.com/repos/ShiHui1997/Wealth/issues', {
+    method: 'POST',
+    headers: {
+      'Authorization': 'Bearer ' + token,
+      'Accept': 'application/vnd.github.v3+json',
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      title: title,
+      body: body,
+      labels: ['lottery-submit']
+    })
+  })
+  .then(function(resp) {
+    if (resp.ok) return resp.json();
+    return resp.json().then(function(err) {
+      throw new Error(err.message || ('HTTP ' + resp.status));
+    });
+  })
+  .then(function(data) {
+    btn.textContent = '✅ 提交成功！';
+    btn.style.background = '#27ae60';
+    showResult(
+      '✅ 已成功提交！系统正在自动处理...<br>' +
+      '<a href="' + data.html_url + '" target="_blank">查看 Issue</a> | ' +
+      '<a href="https://github.com/ShiHui1997/Wealth/actions" target="_blank">查看处理进度</a>',
+      true
+    );
+    // 清空号码输入框
+    document.getElementById('issue').value = '';
+    document.querySelectorAll('#frontInputs input, #backInputs input').forEach(function(el) {
+      el.value = '';
+    });
+    setTimeout(function() {
+      btn.textContent = '提交开奖号码';
+      btn.style.background = '';
+      btn.disabled = false;
+    }, 5000);
+  })
+  .catch(function(err) {
+    btn.textContent = '提交开奖号码';
+    btn.disabled = false;
+    var errMsg = err.message;
+    if (errMsg.indexOf('Bad credentials') >= 0) {
+      errMsg = 'Token 无效或已过期，请检查';
+    } else if (errMsg.indexOf('Not Found') >= 0) {
+      errMsg = '仓库未找到或 Token 无 issues 权限';
+    } else if (errMsg.indexOf('rate limit') >= 0) {
+      errMsg = 'API 调用频率超限，请稍后重试';
+    }
+    showResult('❌ 提交失败：' + errMsg + '<br>请检查 Token 权限是否包含 Issues (Read and write)', false);
+  });
 }
 </script>
 </body>
