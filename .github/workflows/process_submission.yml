@@ -30,6 +30,26 @@ jobs:
       - name: 安装依赖
         run: pip install -r requirements.txt
 
+      # ═══════════════════════════════════════════
+      # 数据库缓存（DB不纳入git，用Actions Cache持久化）
+      # ═══════════════════════════════════════════
+      - name: 恢复数据库缓存
+        id: cache-db
+        uses: actions/cache@v4
+        with:
+          path: data/daletou.db
+          key: daletou-db-${{ github.run_id }}
+          restore-keys: |
+            daletou-db-
+
+      - name: 缓存未命中时初始化数据库
+        if: steps.cache-db.outputs.cache-hit != 'true'
+        run: |
+          echo "[缓存] 首次运行或缓存过期，从体彩API拉取全量数据..."
+          python main.py init
+          python main.py fetch-all
+          echo "[缓存] 全量数据拉取完成"
+
       - name: 写入 PushPlus Token 到配置文件
         env:
           PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
@@ -63,7 +83,6 @@ print(f'[提交处理] Body 前200字: {body[:200]}')
 # 解析期号
 issue_match = re.search(r'开奖提交\s*(\d+)', title)
 if not issue_match:
-    # 尝试从 body 解析
     issue_match = re.search(r'期号[：:]\s*\*?(\d+)', body)
 if not issue_match:
     print('[提交处理] 错误：无法解析期号')
@@ -121,14 +140,15 @@ with open('submission_result.json', 'w') as f:
       - name: 验证 + 校准 + 预测 + 推送
         run: python main.py run
 
-      - name: 提交更新的数据库和日志
+      - name: 保存运行日志
+        if: always()
         run: |
+          mkdir -p logs
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add data/ logs/ submission_result.json 2>/dev/null || true
-          rm -f submission_result.json
+          git add logs/ 2>/dev/null || true
           git diff --cached --quiet || {
-            git commit -m "data: 开奖数据更新 from Issue #$(python -c 'import json;print(json.load(open(\"submission_result.json\")))[\"issue\"]' 2>/dev/null || echo unknown) $(date +%Y-%m-%d)"
+            git commit -m "chore: 运行日志 from Issue $(date +%Y-%m-%d)"
             git push
           }
         env:
@@ -138,11 +158,9 @@ with open('submission_result.json', 'w') as f:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # 获取最新入库的期号用于评论
           ISSUE_NUM=${{ github.event.issue.number }}
 
-          # 发送评论
-          COMMENT_BODY="## ✅ 开奖数据已处理完成\n\n- 📊 **数据库已更新**\n- 🔮 **已重新生成预测**\n- 📱 **推送已发送至微信**\n\n---\n\n*由 GitHub Actions 自动处理 · $(date '+%Y-%m-%d %H:%M')*"
+          COMMENT_BODY="## ✅ 开奖数据已处理完成\n\n- 📊 **数据库已更新**\n- 🔮 **已重新生成预测**\n- 📱 **推送已发送至微信**\n- 📋 **Walk-Forward回测已执行**\n\n---\n\n*由 GitHub Actions 自动处理 · $(date '+%Y-%m-%d %H:%M')*"
 
           curl -s -X POST \
             -H "Authorization: token ${GITHUB_TOKEN}" \
@@ -150,7 +168,6 @@ with open('submission_result.json', 'w') as f:
             "https://api.github.com/repos/ShiHui1997/Wealth/issues/${ISSUE_NUM}/comments" \
             -d "{\"body\": $(echo "$COMMENT_BODY" | python -c 'import sys,json; print(json.dumps(sys.stdin.read()))')}"
 
-          # 关闭 Issue
           curl -s -X PATCH \
             -H "Authorization: token ${GITHUB_TOKEN}" \
             -H "Accept: application/vnd.github.v3+json" \

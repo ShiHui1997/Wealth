@@ -1,15 +1,31 @@
-# 大乐透智能预测系统 🎯
+# 大乐透智能预测系统
 
-基于历史开奖数据的统计分析，学习大乐透的"随机性特征"，在每期开奖前生成与真实开奖随机性最相似的推荐号码，并通过 PushPlus 推送到微信。
+基于历史开奖数据的统计分析，学习大乐透的"随机性特征"，通过多尺度窗口融合打分生成与真实开奖随机性最相似的推荐号码，并通过 PushPlus 推送到微信。
 
-## 功能特性
+## 核心特性
 
-- **历史数据管理**：以50期为一批，持续获取从第一期至今的所有开奖数据（SQLite存储，自动去重）
-- **统计特征学习**：频率分析、和值分布、奇偶比、区间分布、跨度、连号等7维特征提取
-- **多策略候选生成**：频率加权 / 模式约束 / 纯随机 三种策略混合生成候选
-- **相似度评分**：综合7项指标计算候选与历史开奖的相似度，选出最接近的3注
-- **自动推送**：通过 PushPlus 推送预测结果到微信（HTML格式，表格展示）
-- **定时调度**：GitHub Actions 自动在每周一/三/六 19:30（北京时间）运行
+### 数据层
+- **全量历史数据**：从第一期（07001）至今，SQLite存储，自动去重增量更新
+- **体彩官方API**：直连 webapi.sporttery.cn，稳定可靠
+- **手机端提交**：通过 GitHub Issue 自动解析开奖号码并入库
+
+### 算法层
+- **7维特征提取**：频率/和值/奇偶/区间/跨度/连号/后区和值
+- **多尺度窗口分析**：[50/100/200/500/all] 窗口并行分析，Walk-Forward回测优化权重
+- **智能候选生成**：按历史特征定向构造，非纯随机搜索
+- **自我校准**：基于验证结果自动调整特征维度权重 + 种子轮换
+
+### 验证层
+- **自动验证**：预测与真实开奖自动比对，记录命中情况
+- **自动补验证**：扫描遗漏的验证项，确保数据完整
+- **统计检验**：卡方检验（频率分布）、显著性检验（命中率vs随机基线）
+- **特征区分力分析**：评估哪些特征对预测有贡献
+
+### 工程层
+- **GitHub Actions**：定时调度（周一/三/六 19:30）+ Issue自动处理
+- **数据库缓存**：DB不纳入git，用Actions Cache持久化，避免冲突
+- **健康检查**：系统健康度评估 + 异常告警（PushPlus推送）
+- **结构化日志**：每次运行生成JSON日志，含步骤耗时和状态
 
 ## 快速开始
 
@@ -19,45 +35,29 @@
 pip install -r requirements.txt
 ```
 
-### 2. 配置 PushPlus Token
+### 2. 配置
 
-编辑 `config/config.yaml`，填入你的 PushPlus token（从 https://www.pushplus.plus/ 获取）：
+编辑 `config/config.yaml`，填入你的 PushPlus token（从 https://www.pushplus.plus/ 获取）
 
-```yaml
-pushplus:
-  token: "your_pushplus_token_here"
-```
-
-### 3. 初始化数据库
+### 3. 初始化并获取数据
 
 ```bash
-python main.py init
+python main.py init        # 初始化数据库
+python main.py fetch-all   # 获取全部历史数据（约2887期，首次运行）
 ```
 
-### 4. 获取历史数据（首次运行，会获取从第一期至今的所有数据）
+### 4. 生成预测
 
 ```bash
-python main.py fetch-all
+python main.py predict     # 生成预测并推送到微信
+python main.py predict --no-push  # 仅生成不推送
 ```
 
-> ⚠️ 初次运行会逐批（50期/批）获取历史数据，直到第一期为止，可能需要几分钟。
-
-### 5. 分析历史数据（可选，查看统计特征）
+### 5. 完整运行（推荐）
 
 ```bash
-python main.py analyze
-```
-
-### 6. 生成并推送预测
-
-```bash
-python main.py predict
-```
-
-### 7. 完整运行（获取最新 + 预测 + 推送）
-
-```bash
-python main.py run-once
+python main.py run         # 获取+验证+校准+预测+推送（一键完成）
+python main.py run --no-push  # 不推送
 ```
 
 ## 命令行全集
@@ -66,78 +66,117 @@ python main.py run-once
 |------|------|
 | `python main.py init` | 初始化数据库 |
 | `python main.py fetch` | 获取最新一期开奖数据 |
-| `python main.py fetch-all` | 批量获取所有历史数据（50期/批） |
-| `python main.py analyze` | 分析历史数据，打印统计特征 |
-| `python main.py predict` | 生成预测并通过 PushPlus 推送 |
-| `python main.py run-once` | 完整运行一次（获取最新+预测+推送） |
+| `python main.py fetch-all` | 获取全部历史数据（首次运行） |
+| `python main.py verify` | 验证最新一期预测 vs 真实开奖 |
+| `python main.py verify --issue 26070` | 验证指定期号 |
+| `python main.py calibrate` | 自我校准（权重调整 + Walk-Forward回测） |
+| `python main.py calibrate --force` | 强制校准（即使数据不足） |
+| `python main.py backtest` | 单独运行Walk-Forward回测 |
+| `python main.py backtest --periods 100 --sample 50` | 指定回测参数 |
+| `python main.py validate` | 统计验证报告（卡方检验/显著性/健康度） |
+| `python main.py health` | 系统健康检查 |
+| `python main.py stats` | 显示预测效果统计 |
+| `python main.py predict` | 生成并推送预测 |
+| `python main.py predict --no-push` | 仅生成不推送 |
+| `python main.py run` | 完整运行（获取+验证+校准+预测+推送） |
+| `python main.py run --no-push` | 完整运行但不推送 |
 
-## 定时自动运行（GitHub Actions）
-
-项目已配置 GitHub Actions 定时任务，在每周一/三/六 19:30（北京时间）自动运行。
-
-### 启用步骤
-
-1. Fork 或 push 本仓库到你的 GitHub
-2. 在仓库 **Settings → Secrets and variables → Actions** 中添加 secret：
-   - Name: `PUSHPLUS_TOKEN`
-   - Value: 你的 PushPlus token
-3. 确保 GitHub Actions 已启用（Settings → Actions → General）
-4. 可手动触发测试：**Actions → 大乐透定时预测推送 → Run workflow**
-
-## 相似度评分说明
-
-系统从7个维度评估候选号码与历史开奖的相似度：
-
-| 维度 | 权重 | 说明 |
-|------|------|------|
-| 前区和值 | 0.25 | 5个前区号码之和，越接近历史均值得分越高 |
-| 奇偶比 | 0.15 | 前区奇偶数比例，匹配历史最常见模式 |
-| 区间分布 | 0.20 | 前区三区间（1-12/13-24/25-35）号码分布 |
-| 前区跨度 | 0.15 | 最大号-最小号，越接近历史平均跨度得分越高 |
-| 连号特征 | 0.10 | 是否有连号（如12-13）及连号组数 |
-| 后区和值 | 0.10 | 2个后区号码之和 |
-| 频率偏离度 | 0.05 | 候选号码的历史出现频率，避免过热或过冷 |
-
-## 项目结构
+## 系统架构
 
 ```
 Wealth/
 ├── config/
-│   └── config.yaml          # 配置文件
+│   └── config.yaml              # 配置文件
 ├── data/
-│   └── daletou.db         # SQLite数据库（运行后自动生成）
+│   └── daletou.db               # SQLite数据库（不纳入git，Actions缓存持久化）
 ├── src/
 │   ├── data/
-│   │   ├── storage.py     # 数据存储（SQLite）
-│   │   └── fetcher.py   # 多数据源获取（500彩票/官方API）
+│   │   ├── storage.py           # 数据存储（开奖/预测/验证/校准/批次分析）
+│   │   └── fetcher.py           # 体彩官方API数据获取
 │   ├── analysis/
-│   │   └── analyzer.py   # 统计分析 + 相似度计算
+│   │   ├── analyzer.py          # 7维特征提取 + 相似度计算 + 智能候选生成
+│   │   ├── calibration.py       # 自我校准器（权重调整 + WF回测 + 种子轮换）
+│   │   ├── regression.py        # 批次回归分析（特征漂移检测）
+│   │   ├── walk_forward.py      # Walk-Forward回测（多窗口权重优化）
+│   │   └── statistics.py        # 统计验证（卡方/显著性/区分力/健康度）
 │   ├── prediction/
-│   │   └── predictor.py  # 候选生成 + 相似度排序
-│   └── notification/
-│       └── pushplus.py    # PushPlus 微信推送
-├── logs/
-│   └── predictions.log    # 预测记录日志
-├── main.py                 # CLI 主入口
-├── requirements.txt        # Python 依赖
-└── .github/
-    └── workflows/
-        └── predict.yml    # GitHub Actions 定时任务
+│   │   └── predictor.py         # 预测器（多尺度融合打分）
+│   ├── notification/
+│   │   └── pushplus.py          # PushPlus微信推送
+│   └── utils/
+│       └── logger.py            # 结构化日志 + 健康检查告警
+├── web/
+│   └── submit.html              # 手机端提交表单（GitHub API直连）
+├── logs/                        # 运行日志（JSON格式）
+├── main.py                      # CLI主入口
+├── requirements.txt
+└── .github/workflows/
+    ├── predict.yml              # 定时预测（周一/三/六 19:30）
+    └── process_submission.yml   # Issue提交自动处理
 ```
+
+## 算法说明
+
+### 多尺度窗口融合打分
+
+系统不再仅依赖全部历史数据，而是同时用5个不同大小的窗口分析：
+
+| 窗口 | 含义 | 捕捉的规律 |
+|------|------|-----------|
+| 50期 | 最近50期 | 短期热号/冷号趋势 |
+| 100期 | 最近100期 | 中期模式变化 |
+| 200期 | 最近200期 | 中长期特征漂移 |
+| 500期 | 最近500期 | 长期趋势 |
+| all | 全部历史 | 全局基准特征 |
+
+每个窗口独立构建特征并打分，最终得分按Walk-Forward回测优化的权重融合。
+
+### Walk-Forward 回测
+
+用历史数据模拟"用过去W期预测下一期"的过程：
+1. 对每个窗口大小W，遍历最近100期
+2. 用 draws[t-W:t] 构建特征，评分真实开奖 draws[t]
+3. 同时评分50个随机候选作为基线
+4. 计算实际开奖得分 vs 随机基线的比率和命中率
+5. 预测力 = 均分比 × 命中率
+6. 权重 ∝ 预测力（归一化后）
+
+### 自我校准流程
+
+```
+获取开奖数据 → 回归分析 → 验证预测(含补验证) → 校准权重 → Walk-Forward回测 → 种子轮换 → 生成预测 → 推送
+```
+
+1. **特征维度权重**：根据命中期vs未命中期的相似度差异调整
+2. **多窗口权重**：Walk-Forward回测结果自动更新
+3. **种子轮换**：每次校准后种子 = 42 + 校准次数 × 7
+4. **期号因子**：种子 = 基础种子 + 期号数值，保证每期不同
+
+## GitHub Actions 配置
+
+### 定时预测
+
+- 触发时间：周一/三/六 19:30（北京时间）
+- 数据库通过 Actions Cache 持久化（不纳入git）
+- 缓存未命中时自动从API拉取全量数据
+
+### Issue 自动处理
+
+- 手机端提交开奖号码 → 创建Issue → 自动解析入库 → 验证+校准+预测+推送 → 关闭Issue
+
+### 必需的 Secrets
+
+| 名称 | 说明 |
+|------|------|
+| `PUSHPLUS_TOKEN` | PushPlus推送token |
+| `GITHUB_TOKEN` | 自动提供，无需配置 |
 
 ## 注意事项
 
-- 🎲 **彩票具有随机性，本系统仅供娱乐参考，不构成任何购彩建议**
-- 📊 历史数据越多，统计分析越准确（建议至少积累100期数据后再依赖预测结果）
-- 🔄 系统会在每次 `fetch` 和 `predict` 后自动更新本地数据库
-- 🔔 如果使用 GitHub Actions 定时运行，数据库文件会随每次运行更新并提交回仓库
-
-## 数据来源
-
-系统支持多数据源自动容错：
-- 中国体彩网（官方）
-- 500彩票网（HTML解析）
-- 本地种子数据（可手动导入）
+- 彩票具有随机性，本系统仅供娱乐参考，不构成任何购彩建议
+- 历史数据越多，统计分析越准确
+- 数据库文件不纳入git，通过GitHub Actions Cache在运行间持久化
+- Walk-Forward回测首次运行可能需要几分钟（100期×5窗口×50候选）
 
 ## License
 

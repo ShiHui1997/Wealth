@@ -7,8 +7,12 @@ dist/
 build/
 *.egg
 
-# 本地数据（数据库可选择不提交，由 Actions 运行时重新获取）
-# data/*.db
+# 本地数据（数据库不纳入git，由GitHub Actions缓存持久化）
+# 首次运行时自动从体彩API拉取全量数据
+data/*.db
+data/*.db-journal
+data/*.db-wal
+data/*.db-shm
 
 # 日志
 logs/*.log

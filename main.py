@@ -7,14 +7,18 @@
   python main.py fetch        获取最新一期开奖数据（日常增量更新）
   python main.py verify       验证最新一期预测 vs 真实开奖
   python main.py verify --issue 2024001   验证指定期号
-  python main.py calibrate    根据验证结果校准权重
-  python main.py stats       显示预测效果统计
+  python main.py calibrate    根据验证结果校准权重（含Walk-Forward回测）
+  python main.py backtest     单独运行Walk-Forward回测
+  python main.py validate     统计验证报告（卡方检验/显著性检验/系统健康度）
+  python main.py health       系统健康检查
+  python main.py stats        显示预测效果统计
   python main.py predict [--no-push]  生成并推送本期预测
-  python main.py run         完整运行一次：获取+验证+校准+预测+推送
+  python main.py run          完整运行一次：获取+验证+校准+预测+推送
 """
 import sys
 import os
 import argparse
+import traceback
 from datetime import datetime
 import yaml
 
@@ -25,8 +29,11 @@ from src.data.fetcher import DaletouFetcher
 from src.analysis.analyzer import DaletouAnalyzer
 from src.analysis.regression import BatchRegressionAnalyzer
 from src.analysis.calibration import SelfCalibrator
+from src.analysis.walk_forward import WalkForwardBacktester
+from src.analysis.statistics import StatisticalValidator
 from src.prediction.predictor import DaletouPredictor
 from src.notification.pushplus import PushPlusNotifier
+from src.utils.logger import RunLogger, HealthChecker
 
 
 def load_config():
@@ -141,18 +148,97 @@ def cmd_verify(args, config):
 
 
 def cmd_calibrate(args, config):
-    """执行自我校准"""
+    """执行自我校准（含Walk-Forward回测）"""
     storage = LotteryStorage(config["database"]["path"])
-    calibrator = SelfCalibrator(storage)
+    analyzer = DaletouAnalyzer()
+    calibrator = SelfCalibrator(storage, analyzer=analyzer)
     calibrator.calibrate(force=args.force)
     calibrator.print_calibration_status()
+
+
+def cmd_backtest(args, config):
+    """单独运行Walk-Forward回测"""
+    storage = LotteryStorage(config["database"]["path"])
+    analyzer = DaletouAnalyzer()
+    wf = WalkForwardBacktester(analyzer, storage)
+
+    draws = storage.get_all_draws()
+    if len(draws) < 100:
+        print(f"[回测] 数据不足100期（当前{len(draws)}期），无法回测")
+        return
+
+    test_periods = args.periods if args.periods else 100
+    candidate_sample = args.sample if args.sample else 50
+
+    result = wf.run_backtest(
+        draws,
+        test_periods=test_periods,
+        candidate_sample=candidate_sample,
+    )
+
+    print(result.get("backtest_summary", ""))
+
+    # 打印详细窗口对比
+    print(f"\n{'='*60}")
+    print(f"  Walk-Forward 回测详细结果")
+    print(f"{'='*60}")
+    for label, wr in result.get("window_results", {}).items():
+        print(f"\n  窗口 {label}:")
+        print(f"    测试期数: {wr['test_count']}")
+        print(f"    实际开奖均分: {wr['avg_actual_score']:.6f}")
+        print(f"    随机候选均分: {wr['avg_random_score']:.6f}")
+        print(f"    均分比: {wr['avg_ratio']:.4f}")
+        print(f"    命中率(超P90): {wr['hit_rate']:.1%}")
+        print(f"    预测力: {wr['predictive_power']:.6f}")
+        print(f"    融合权重: {result['window_weights'].get(label, 0):.4f}")
+    print(f"\n{'='*60}")
+
+
+def cmd_validate(args, config):
+    """统计验证报告"""
+    storage = LotteryStorage(config["database"]["path"])
+    analyzer = DaletouAnalyzer()
+    validator = StatisticalValidator(storage)
+
+    draws = storage.get_all_draws()
+    if not draws:
+        print("[验证] 无数据")
+        return
+
+    report = validator.full_report(draws, storage, analyzer)
+    print(report)
+
+
+def cmd_health(args, config):
+    """系统健康检查"""
+    storage = LotteryStorage(config["database"]["path"])
+    validator = StatisticalValidator(storage)
+    draws = storage.get_all_draws()
+
+    health = validator.system_health(draws, storage)
+
+    print(f"\n{'='*50}")
+    print(f"  系统健康检查")
+    print(f"{'='*50}")
+    for check in health["checks"]:
+        icon = {"ok": "✅", "warning": "⚠️", "info": "ℹ️"}.get(check["status"], "?")
+        print(f"  {icon} {check['name']}: {check['detail']}")
+
+    status_map = {
+        "healthy": "✅ 系统健康",
+        "minor_issues": "⚠️ 存在小问题",
+        "needs_attention": "❌ 需要关注",
+    }
+    print(f"\n  总体状态: {status_map.get(health['overall'], health['overall'])}")
+    print(f"{'='*50}\n")
 
 
 def cmd_stats(args, config):
     """显示预测效果统计"""
     storage = LotteryStorage(config["database"]["path"])
     stats = storage.get_verification_stats()
-    calibrator = SelfCalibrator(storage)
+    analyzer = DaletouAnalyzer()
+    calibrator = SelfCalibrator(storage, analyzer=analyzer)
 
     print(f"\n{'='*50}")
     print(f"  大乐透预测系统 - 效果统计")
@@ -180,6 +266,14 @@ def cmd_stats(args, config):
     print(f"\n{'='*50}")
     calibrator.print_calibration_status()
 
+    # 显示Walk-Forward权重
+    wf = WalkForwardBacktester(analyzer, storage)
+    wf_weights = wf.get_window_weights()
+    if wf_weights:
+        print(f"\n  Walk-Forward 窗口权重:")
+        for label, weight in wf_weights.items():
+            print(f"    窗口 {label}: {weight:.4f}")
+
 
 def cmd_predict(args, config):
     """生成预测并推送"""
@@ -194,7 +288,6 @@ def cmd_predict(args, config):
     predictor = DaletouPredictor()
     top_n = config["prediction"]["recommend_count"]
     candidates_count = config["prediction"]["candidate_count"]
-    # random_seed 不再从 config.yaml 读取，由 predictor 自动从数据库获取
     latest_issue = storage.get_latest_issue()
     next_issue = _calc_next_issue(latest_issue) if latest_issue else "未知"
     prediction = predictor.predict(
@@ -203,6 +296,7 @@ def cmd_predict(args, config):
         candidates_count=candidates_count,
         storage=storage,
         next_issue=next_issue,
+        use_multi_scale=True,
     )
 
     # 打印结果
@@ -229,87 +323,119 @@ def cmd_predict(args, config):
 def cmd_run(args, config):
     """完整运行一次：获取最新开奖 + 回归分析 + 验证上期预测 + 校准 + 预测下期 + 推送"""
     storage = LotteryStorage(config["database"]["path"])
+    notifier = PushPlusNotifier(config["pushplus"]["token"])
+    health_checker = HealthChecker(notifier)
+    logger = RunLogger()
 
     print(f"\n{'='*50}")
     print(f"[完整运行] {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"{'='*50}")
 
-    # 第一步：尝试获取最新开奖（失败不阻断，用数据库现有数据继续）
-    print("\n[步骤1/5] 尝试获取最新开奖数据...")
     try:
-        cmd_fetch(args, config)
-    except Exception as e:
-        print(f"[步骤1/5] 获取最新数据失败（可能为国外服务器，无法访问体彩API）")
-        print(f"[步骤1/5] 将使用数据库中已有数据继续...")
-
-    # 第二步：批次回归分析（新数据进来后，对比历史特征是否有漂移）
-    print("\n[步骤2/5] 执行批次回归分析...")
-    try:
-        analyzer = DaletouAnalyzer()
-        regression_analyzer = BatchRegressionAnalyzer(analyzer)
-        all_draws = storage.get_all_draws()
-        if len(all_draws) >= 100:
-            # 取最近50期作为"新批次"，与更早的历史数据做对比
-            recent_batch = all_draws[-50:]
-            earlier_draws = all_draws[:-50]
-            report = regression_analyzer.analyze_batch(recent_batch, earlier_draws)
-            storage.save_batch_analysis(
-                0,  # batch_no=0 表示"最新回归"，非正式批次
-                recent_batch[0]["issue"],
-                recent_batch[-1]["issue"],
-                report["diffs"],
-                report["notes"]
+        # 第一步：尝试获取最新开奖（失败不阻断，用数据库现有数据继续）
+        step1 = logger.step_start("获取最新开奖", "从体彩API拉取")
+        try:
+            cmd_fetch(args, config)
+            logger.step_end(step1, "ok", "获取完成")
+        except Exception as e:
+            logger.step_end(step1, "warning", f"获取失败，使用现有数据: {e}")
+            health_checker.alert_on_warning(
+                f"体彩API获取失败: {e}",
+                "步骤1-获取最新开奖（不影响后续流程）"
             )
-            print(f"[步骤2/5] 回归分析完成")
-        else:
-            print(f"[步骤2/5] 数据不足100期，跳过回归分析")
+
+        # 第二步：批次回归分析
+        step2 = logger.step_start("回归分析", "最近50期 vs 历史")
+        try:
+            analyzer = DaletouAnalyzer()
+            regression_analyzer = BatchRegressionAnalyzer(analyzer)
+            all_draws = storage.get_all_draws()
+            if len(all_draws) >= 100:
+                recent_batch = all_draws[-50:]
+                earlier_draws = all_draws[:-50]
+                report = regression_analyzer.analyze_batch(recent_batch, earlier_draws)
+                storage.save_batch_analysis(
+                    0,
+                    recent_batch[0]["issue"],
+                    recent_batch[-1]["issue"],
+                    report["diffs"],
+                    report["notes"]
+                )
+                logger.step_end(step2, "ok", "回归分析完成")
+            else:
+                logger.step_end(step2, "warning", "数据不足100期，跳过")
+        except Exception as e:
+            logger.step_end(step2, "error", f"回归分析失败: {e}")
+
+        # 第三步：验证上期预测 + 自动补验证所有遗漏的期号
+        step3 = logger.step_start("验证预测", "验证上期 + 补验证遗漏")
+        try:
+            storage_r = LotteryStorage(config["database"]["path"])
+            cmd_verify(argparse.Namespace(issue=None), config)
+
+            # 自动补验证
+            all_draws = storage_r.get_all_draws()
+            draw_issues = {d["issue"] for d in all_draws}
+            pred_issues = storage_r.get_all_predicted_issues()
+            verified_issues = storage_r.get_all_verified_issues()
+
+            pending = set(pred_issues) & draw_issues - verified_issues
+            if pending:
+                print(f"[自动补验] 发现 {len(pending)} 期待补验证: {sorted(pending)}")
+                for issue in sorted(pending):
+                    result = storage_r.verify_prediction(issue)
+                    if result:
+                        front_m = result.get("best_front_match", 0)
+                        back_m = result.get("best_back_match", 0)
+                        print(f"  ✓ {issue}期: 前区命中{front_m} 后区命中{back_m}")
+            else:
+                print("[自动补验] 无遗漏的验证项")
+
+            ver_count = len(storage_r.get_all_verified_issues())
+            logger.step_end(step3, "ok", f"已验证{ver_count}期")
+        except Exception as e:
+            logger.step_end(step3, "error", f"验证失败: {e}")
+
+        # 第四步：校准（如果数据足够）
+        step4 = logger.step_start("自我校准", "权重调整 + Walk-Forward")
+        try:
+            stats = storage_r.get_verification_stats()
+            if stats["total_verified"] >= 5:
+                analyzer = DaletouAnalyzer()
+                calibrator = SelfCalibrator(storage_r, analyzer=analyzer)
+                calibrator.calibrate(force=False, run_walk_forward=True)
+                logger.step_end(step4, "ok", "校准完成（含WF回测）")
+            else:
+                logger.step_end(step4, "warning",
+                    f"跳过校准（已验证{stats['total_verified']}期，需要>=5期）")
+        except Exception as e:
+            logger.step_end(step4, "error", f"校准失败: {e}")
+
+        # 第五步：预测下期并推送
+        step5 = logger.step_start("生成预测", "多尺度融合打分 + 推送")
+        try:
+            predict_args = argparse.Namespace(no_push=getattr(args, 'no_push', False))
+            cmd_predict(predict_args, config)
+            logger.step_end(step5, "ok", "预测完成")
+        except Exception as e:
+            logger.step_end(step5, "error", f"预测失败: {e}")
+            health_checker.alert_on_error(
+                e, "步骤5-生成预测"
+            )
+            raise  # 预测失败是致命错误
+
+        # 保存运行日志
+        log_path = logger.save()
+        print(f"\n[运行日志] 已保存: {log_path}")
+        logger.print_summary()
+
     except Exception as e:
-        print(f"[步骤2/5] 回归分析失败: {e}")
-
-    # 第三步：验证上期预测 + 自动补验证所有遗漏的期号
-    print("\n[步骤3/5] 验证上期预测...")
-    storage_r = LotteryStorage(config["database"]["path"])
-    cmd_verify(argparse.Namespace(issue=None), config)
-
-    # 自动补验证: 扫描"有预测记录+有开奖数据+未验证"的期号
-    try:
-        all_draws = storage_r.get_all_draws()
-        draw_issues = {d["issue"] for d in all_draws}
-        pred_issues = storage_r.get_all_predicted_issues()
-        verified_issues = storage_r.get_all_verified_issues()
-
-        pending = set(pred_issues) & draw_issues - verified_issues
-        if pending:
-            print(f"[自动补验] 发现 {len(pending)} 期待补验证: {sorted(pending)}")
-            for issue in sorted(pending):
-                result = storage_r.verify_prediction(issue)
-                if result:
-                    front_m = result.get("best_front_match", 0)
-                    back_m = result.get("best_back_match", 0)
-                    print(f"  ✓ {issue}期: 前区命中{front_m} 后区命中{back_m}")
-                else:
-                    print(f"  ✗ {issue}期: 验证失败")
-        else:
-            print("[自动补验] 无遗漏的验证项")
-    except Exception as e:
-        print(f"[自动补验] 补验证过程出错: {e}")
-
-    # 第四步：校准（如果数据足够）
-    stats = storage_r.get_verification_stats()
-    if stats["total_verified"] >= 5:
-        print("\n[步骤4/5] 执行自我校准...")
-        cmd_calibrate(argparse.Namespace(force=False), config)
-    else:
-        print(f"\n[步骤4/5] 跳过校准（已验证{stats['total_verified']}期，需要>=5期）")
-
-    # 第五步：预测下期并推送（run 模式下默认推送，--no-push 时跳过）
-    print("\n[步骤5/5] 生成并推送下期预测...")
-    predict_args = argparse.Namespace(no_push=getattr(args, 'no_push', False))
-    cmd_predict(predict_args, config)
-
-    print(f"\n{'='*50}")
-    print(f"[完整运行] 完成！")
-    print(f"{'='*50}\n")
+        # 致命错误：发送告警
+        health_checker.alert_on_error(e, "cmd_run 完整运行")
+        logger.print_summary()
+        print(f"\n[完整运行] ❌ 发生错误: {e}")
+        traceback.print_exc()
+        raise
 
 
 # ═══════════════════════════════════════════════
@@ -319,27 +445,22 @@ def cmd_run(args, config):
 def _calc_next_issue(current_issue: str) -> str:
     """计算下一期期号（大乐透格式: YYNNN，如 07001=2007年第1期）"""
     try:
-        # 标准化期号：去掉前导的完整年份前缀（如 "2007001" → "07001"）
         issue_str = str(current_issue).strip()
         if len(issue_str) == 7 and issue_str[0:4].isdigit():
-            # 完整年份格式 "2007001" → 取后5位 "07001"
-            issue_str = issue_str[2:]  # "07001"
+            issue_str = issue_str[2:]
 
-        # 大乐透标准格式: 前两位为年份后缀，后3位为期序号
         if len(issue_str) >= 5:
-            year_suffix = int(issue_str[:2])   # 如 26
-            seq = int(issue_str[2:])            # 如 067
+            year_suffix = int(issue_str[:2])
+            seq = int(issue_str[2:])
         else:
-            # 兜底：尝试按4位年份解析
             year_suffix = int(str(int(issue_str)) // 1000)
             seq = int(str(int(issue_str)) % 1000)
 
-        max_per_year = 170  # 一年约170期（每周一/三/六）
+        max_per_year = 170
         if seq >= max_per_year:
             return f"{(year_suffix % 99) + 1:02d}001"
         return f"{year_suffix:02d}{seq + 1:03d}"
     except Exception:
-        # 兜底：直接数字+1
         try:
             n = int(current_issue)
             return str(n + 1)
@@ -364,8 +485,13 @@ def main():
     p_fetch = subparsers.add_parser("fetch", help="获取最新一期开奖")
     p_verify = subparsers.add_parser("verify", help="验证预测 vs 真实开奖")
     p_verify.add_argument("--issue", type=str, default=None, help="指定期号")
-    p_calibrate = subparsers.add_parser("calibrate", help="执行自我校准")
+    p_calibrate = subparsers.add_parser("calibrate", help="执行自我校准（含WF回测）")
     p_calibrate.add_argument("--force", action="store_true", help="强制执行（即使数据不足）")
+    p_backtest = subparsers.add_parser("backtest", help="单独运行Walk-Forward回测")
+    p_backtest.add_argument("--periods", type=int, default=100, help="回测期数（默认100）")
+    p_backtest.add_argument("--sample", type=int, default=50, help="每期随机候选数（默认50）")
+    subparsers.add_parser("validate", help="统计验证报告")
+    subparsers.add_parser("health", help="系统健康检查")
     subparsers.add_parser("stats", help="显示预测效果统计")
     p_predict = subparsers.add_parser("predict", help="生成并推送预测")
     p_predict.add_argument("--no-push", action="store_true", help="不推送到PushPlus")
@@ -385,6 +511,9 @@ def main():
         "fetch-all": cmd_fetch_all,
         "verify": cmd_verify,
         "calibrate": cmd_calibrate,
+        "backtest": cmd_backtest,
+        "validate": cmd_validate,
+        "health": cmd_health,
         "stats": cmd_stats,
         "predict": cmd_predict,
         "run": cmd_run,

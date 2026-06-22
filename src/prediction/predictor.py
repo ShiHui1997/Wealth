@@ -1,9 +1,10 @@
 """
 大乐透预测器
 基于历史特征生成候选号码，并按与真实开奖的相似度排序
+支持多尺度窗口融合打分（Walk-Forward优化权重）
 """
 import random
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional
 from src.analysis.analyzer import DaletouAnalyzer
 
 
@@ -13,23 +14,39 @@ class DaletouPredictor:
     ① 分析历史数据，学习"随机性特征"
     ② 生成大量候选号码
     ③ 按相似度打分，选出最"像"真实开奖的号码
+    ④ 支持多尺度窗口融合打分（Walk-Forward回测优化）
     """
 
     def __init__(self, front_range: int = 35, back_range: int = 12):
         self.analyzer = DaletouAnalyzer(front_range, back_range)
+        self._wf_backtester = None  # 延迟初始化
+
+    def _get_wf_backtester(self, storage):
+        """延迟初始化 Walk-Forward 回测器"""
+        if self._wf_backtester is None and storage:
+            from src.analysis.walk_forward import WalkForwardBacktester
+            self._wf_backtester = WalkForwardBacktester(self.analyzer, storage)
+        return self._wf_backtester
 
     def predict(self, draws: List[Dict], top_n: int = 3,
                 candidates_count: int = 1000,
                 storage=None,
                 random_seed: int = None,
-                next_issue: str = None) -> List[Tuple[Dict, float]]:
+                next_issue: str = None,
+                use_multi_scale: bool = True) -> List[Tuple[Dict, float]]:
         """
         预测下一期号码
         使用固定随机种子，确保同样的历史数据每次得出相同结果
-        random_seed: 随机种子，None 时从数据库自动读取（推荐）
-        storage: 必须传入，用于加载校准权重和读取当前种子
-        next_issue: 要预测的期号（如 "26070"），用于将期号纳入种子计算，
-                    保证每期预测结果不同，同时同一期多次运行结果一致
+
+        参数:
+            draws: 全部历史开奖数据
+            top_n: 返回前N注
+            candidates_count: 候选号码生成数量
+            storage: 数据库实例（用于加载校准权重和种子）
+            random_seed: 随机种子（None时自动从数据库读取）
+            next_issue: 要预测的期号（纳入种子计算）
+            use_multi_scale: 是否启用多尺度窗口融合打分
+
         Returns: [(号码dict, 相似度得分), ...] 按得分降序
         """
         # 种子计算策略:
@@ -50,7 +67,7 @@ class DaletouPredictor:
         print(f"[预测] 使用种子: {random_seed} "
               f"(基础={base_seed if storage else 42} + 期号={next_issue or 'N/A'})")
 
-        print(f"\n[预测] 基于最近 {len(draws)} 期数据进行分析...")
+        print(f"\n[预测] 基于全部 {len(draws)} 期数据进行分析...")
 
         # 加载校准权重（如果可用）
         weights = None
@@ -78,15 +95,19 @@ class DaletouPredictor:
             else:
                 print("[预测] 使用默认权重")
 
+        # 检查是否有多尺度窗口权重
+        wf_weights = None
+        if use_multi_scale and storage:
+            wf_backtester = self._get_wf_backtester(storage)
+            if wf_backtester:
+                wf_weights = wf_backtester.get_window_weights()
+                print(f"[预测] 多尺度窗口权重: {wf_weights}")
+
         # 第一步：从历史数据中提取特征（"学习随机性"）
         features = self.analyzer.build_features(draws)
 
         # 第二步：用智能策略生成候选号码（按历史特征定向构造）
         # 使用固定随机种子（已在函数开头设置），确保结果可复现
-        all_candidates = []
-
-        # 策略：smart（按特征定向构造，最接近真实随机性）
-        # 生成多批，每批用不同的随机扰动，增加多样性
         all_candidates = self.analyzer.generate_candidates(
             features, candidates_count, "smart"
         )
@@ -105,17 +126,32 @@ class DaletouPredictor:
 
         # 第三步：对每个候选计算相似度得分
         scored = []
-        for cand in all_candidates:
-            score = self.analyzer.compute_similarity_score(
-                cand, features, weights=weights
-            )
-            scored.append((cand, score))
+        if wf_weights and use_multi_scale:
+            # 多尺度融合打分
+            print("[预测] 使用多尺度窗口融合打分...")
+            wf_backtester = self._get_wf_backtester(storage)
+            for cand in all_candidates:
+                score = wf_backtester.multi_scale_score(
+                    cand, draws, weights=wf_weights,
+                    feature_weights=weights
+                )
+                scored.append((cand, score))
+        else:
+            # 单尺度打分（原有逻辑）
+            for cand in all_candidates:
+                score = self.analyzer.compute_similarity_score(
+                    cand, features, weights=weights
+                )
+                scored.append((cand, score))
 
         # 按得分降序排列
         scored.sort(key=lambda x: x[1], reverse=True)
 
-        print(f"[预测] 相似度打分完成，Top3得分: "
+        print(f"[预测] 打分完成，Top3得分: "
               f"{scored[0][1]:.4f}, {scored[1][1]:.4f}, {scored[2][1]:.4f}")
+        if wf_weights:
+            print(f"[预测] 多尺度融合打分模式 "
+                  f"(窗口: {', '.join(f'{k}={v:.2f}' for k,v in wf_weights.items())})")
 
         return scored[:top_n]
 

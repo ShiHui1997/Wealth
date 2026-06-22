@@ -2,6 +2,12 @@
 自我校准模块
 根据历史验证结果，自动调整预测策略的权重和参数
 让系统随着数据积累越来越"懂"大乐透的随机性
+
+校准流程：
+1. 读取历史验证结果，调整特征维度权重
+2. 执行 Walk-Forward 回测，计算多窗口融合权重
+3. 轮换随机种子
+4. 持久化所有参数到数据库
 """
 from typing import Dict, List
 import json
@@ -11,10 +17,12 @@ class SelfCalibrator:
     """
     自我校准器
     读取历史验证结果 → 分析哪类特征最"准" → 调整相似度权重
+    → 运行Walk-Forward回测 → 计算多窗口权重 → 轮换种子
     """
 
-    def __init__(self, storage):
+    def __init__(self, storage, analyzer=None):
         self.storage = storage
+        self.analyzer = analyzer  # 可选，用于Walk-Forward回测
         self.default_weights = {
             "front_sum":    0.25,
             "odd_even":    0.15,
@@ -25,15 +33,16 @@ class SelfCalibrator:
             "frequency":    0.05,
         }
 
-    def calibrate(self, force: bool = False):
+    def calibrate(self, force: bool = False, run_walk_forward: bool = True):
         """
-        执行一次校准
-        读取所有验证结果，计算各维度与命中率的相关性
-        返回新的权重配置
+        执行一次完整校准
+        1. 读取所有验证结果，计算各维度与命中率的相关性
+        2. 生成新的特征维度权重
+        3. 运行Walk-Forward回测（可选）
+        4. 轮换种子
         """
         stats = self.storage.get_verification_stats()
         # 首次校准门槛: 5期（让系统尽早开始学习）
-        # 后续校准: 每积累新数据就重新校准
         min_threshold = 5
         if stats["total_verified"] < min_threshold and not force:
             print(f"[校准] 验证数据不足（{stats['total_verified']}期），"
@@ -48,13 +57,20 @@ class SelfCalibrator:
         # 分析并生成新权重
         new_weights = self._compute_new_weights(details, stats)
 
-        # 保存到数据库
+        # 保存特征维度权重到数据库
         for name, value in new_weights.items():
             self.storage.save_calibration(
                 f"weight_{name}",
                 value,
                 f"基于{stats['total_verified']}期验证结果自动校准"
             )
+
+        # Walk-Forward 回测（如果有analyzer且数据足够）
+        if run_walk_forward and self.analyzer:
+            try:
+                self._run_walk_forward_backtest()
+            except Exception as e:
+                print(f"[校准] Walk-Forward回测失败: {e}（不影响主校准流程）")
 
         # 校准次数 +1，并自动轮换种子
         calib_count = self.storage.incr_calibration_count()
@@ -72,6 +88,35 @@ class SelfCalibrator:
             print(f"  {name}: {default:.4f} → {weight:.4f}  {arrow}")
 
         return new_weights
+
+    def _run_walk_forward_backtest(self):
+        """执行Walk-Forward回测，更新多窗口权重"""
+        from src.analysis.walk_forward import WalkForwardBacktester
+
+        draws = self.storage.get_all_draws()
+        if len(draws) < 100:
+            print("[校准] 数据不足100期，跳过Walk-Forward回测")
+            return
+
+        # 控制回测规模：最近100期做测试，避免太慢
+        test_periods = min(100, len(draws) - 50)
+
+        wf = WalkForwardBacktester(self.analyzer, self.storage)
+        result = wf.run_backtest(
+            draws,
+            test_periods=test_periods,
+            candidate_sample=30  # 减少样本量以加速
+        )
+
+        if result.get("window_weights"):
+            print(f"[校准] Walk-Forward权重已更新: {result['window_weights']}")
+
+        # 保存回测时间戳
+        self.storage.save_calibration(
+            "wf_last_calibration_time",
+            0,
+            f"校准#{self.storage.get_calibration_count()}时回测"
+        )
 
     def _compute_new_weights(self, details: List[Dict], stats: Dict) -> Dict:
         """

@@ -18,7 +18,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          fetch-depth: 0  # 需要完整历史以提交数据更新
+          fetch-depth: 0
 
       - name: 设置 Python
         uses: actions/setup-python@v5
@@ -28,12 +28,39 @@ jobs:
       - name: 安装依赖
         run: pip install -r requirements.txt
 
-      - name: 恢复数据库（从 repo 读取）
+      # ═══════════════════════════════════════════
+      # 数据库缓存（DB不纳入git，用Actions Cache持久化）
+      # ═══════════════════════════════════════════
+      - name: 恢复数据库缓存
+        id: cache-db
+        uses: actions/cache@v4
+        with:
+          path: data/daletou.db
+          key: daletou-db-${{ github.run_id }}
+          restore-keys: |
+            daletou-db-
+
+      - name: 缓存未命中时初始化数据库
+        if: steps.cache-db.outputs.cache-hit != 'true'
+        run: |
+          echo "[缓存] 首次运行或缓存过期，从体彩API拉取全量数据..."
+          python main.py init
+          python main.py fetch-all
+          echo "[缓存] 全量数据拉取完成"
+
+      - name: 验证数据库可用
         run: |
           if [ -f data/daletou.db ]; then
-            echo "数据库已存在，继续使用"
+            COUNT=$(python -c "import sqlite3; print(sqlite3.connect('data/daletou.db').execute('SELECT COUNT(*) FROM draws').fetchone()[0])")
+            echo "[数据库] 当前 $COUNT 期数据"
+            if [ "$COUNT" -lt 100 ]; then
+              echo "[数据库] ⚠️ 数据不足100期，执行全量获取..."
+              python main.py fetch-all
+            fi
           else
-            echo "首次运行，将创建新数据库"
+            echo "[数据库] ❌ 数据库不存在，执行初始化..."
+            python main.py init
+            python main.py fetch-all
           fi
 
       - name: 写入 PushPlus Token 到配置文件
@@ -51,20 +78,34 @@ jobs:
           print('PushPlus token 已写入配置')
           "
 
+      # ═══════════════════════════════════════════
+      # 完整运行：获取+验证+校准+预测+推送
+      # ═══════════════════════════════════════════
       - name: 完整运行（获取最新开奖 + 验证上期 + 校准 + 预测下期 + 推送）
         run: python main.py run
+        continue-on-error: false
 
-      - name: 提交更新的数据库和日志
+      # ═══════════════════════════════════════════
+      # 后续步骤：保存日志 + 更新缓存 + 打印状态
+      # ═══════════════════════════════════════════
+      - name: 保存运行日志
+        if: always()
         run: |
+          mkdir -p logs
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add data/ logs/ 2>/dev/null || true
+          git add logs/ 2>/dev/null || true
           git diff --cached --quiet || {
-            git commit -m "chore: 更新开奖数据 + 预测记录 $(date +%Y-%m-%d)"
+            git commit -m "chore: 运行日志 $(date +%Y-%m-%d)"
             git push
           }
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: 打印校准状态（便于查看模型演化）
-        run: python main.py stats
+        if: always()
+        run: python main.py stats || true
+
+      - name: 打印系统健康度
+        if: always()
+        run: python main.py health || true
