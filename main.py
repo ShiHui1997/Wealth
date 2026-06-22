@@ -54,6 +54,55 @@ def cmd_init(args, config):
     print(f"  当前期数: {storage.count()}")
 
 
+def cmd_load_seed(args, config):
+    """从JSON种子文件加载历史数据（替代体彩API，适用于GitHub Actions等受限环境）"""
+    seed_path = getattr(args, 'seed', 'data/seed_data.json')
+    if not os.path.exists(seed_path):
+        print(f"[种子加载] ❌ 种子文件不存在: {seed_path}")
+        print("[种子加载] 提示: 运行 python main.py export-seed 从本地DB导出")
+        return
+
+    storage = LotteryStorage(config["database"]["path"])
+    existing = storage.count()
+    if existing > 0:
+        print(f"[种子加载] 数据库已有 {existing} 期数据，将追加新记录")
+
+    count = storage.load_from_seed(seed_path)
+    total = storage.count()
+    if total > 0:
+        print(f"\n[种子加载] ✅ 数据库就绪，共 {total} 期")
+        print(f"  范围: {storage.get_first_issue()} ~ {storage.get_latest_issue()}")
+    else:
+        print("\n[种子加载] ❌ 数据库仍为空")
+
+
+def cmd_export_seed(args, config):
+    """导出当前数据库为JSON种子文件（用于提交到仓库）"""
+    import json as _json
+    storage = LotteryStorage(config["database"]["path"])
+    draws = storage.get_all_draws()
+    if not draws:
+        print("[导出种子] 数据库为空，无法导出")
+        return
+
+    output = getattr(args, 'output', 'data/seed_data.json')
+    data = []
+    for d in draws:
+        data.append({
+            "issue": d["issue"],
+            "draw_date": d["draw_date"],
+            "front": d["front"],
+            "back": d["back"],
+        })
+
+    with open(output, "w", encoding="utf-8") as f:
+        _json.dump(data, f, ensure_ascii=False, indent=2)
+
+    print(f"[导出种子] 已导出 {len(data)} 条记录到 {output}")
+    print(f"  范围: {draws[0]['issue']} ~ {draws[-1]['issue']}")
+    print(f"  大小: {os.path.getsize(output)} bytes")
+
+
 def cmd_fetch(args, config):
     storage = LotteryStorage(config["database"]["path"])
     fetcher = DaletouFetcher(
@@ -403,7 +452,11 @@ def cmd_predict(args, config):
 
 
 def cmd_run(args, config):
-    """完整运行一次：获取最新开奖 + 回归分析 + 验证上期预测 + 校准 + 预测下期 + 推送"""
+    """完整运行一次：验证上期 + 回归分析 + 校准 + 预测下期 + 推送
+
+    纯本地模式：不再调用体彩API。
+    数据来源：(1)仓库seed_data.json (2)Issue反馈提交
+    """
     storage = LotteryStorage(config["database"]["path"])
     # 安全读取token（兼容config结构变化）
     _token = config.get("pushplus", {}).get("token", "")
@@ -416,24 +469,22 @@ def cmd_run(args, config):
     print(f"{'='*50}")
 
     try:
-        # 第一步：尝试获取最新开奖（失败不阻断，用数据库现有数据继续）
-        step1 = logger.step_start("获取最新开奖", "从体彩API拉取")
-        try:
-            cmd_fetch(args, config)
-            logger.step_end(step1, "ok", "获取完成")
-        except Exception as e:
-            logger.step_end(step1, "warning", f"获取失败，使用现有数据: {e}")
-            health_checker.alert_on_warning(
-                f"体彩API获取失败: {e}",
-                "步骤1-获取最新开奖（不影响后续流程）"
-            )
+        # 第一步：确认数据可用（纯本地，不调API）
+        step1 = logger.step_start("数据检查", "确认历史数据就绪")
+        all_draws = storage.get_all_draws()
+        draw_count = len(all_draws)
+        if draw_count < 10:
+            logger.step_end(step1, "error", f"数据不足({draw_count}期)")
+            print(f"\n[完整运行] ❌ 数据不足({draw_count}期)，至少需要10期")
+            print("  请确保 data/seed_data.json 存在且包含足够数据")
+            return
+        logger.step_end(step1, "ok", f"{draw_count}期 (最新: {storage.get_latest_issue()})")
 
         # 第二步：批次回归分析
         step2 = logger.step_start("回归分析", "最近50期 vs 历史")
         try:
             analyzer = DaletouAnalyzer()
             regression_analyzer = BatchRegressionAnalyzer(analyzer)
-            all_draws = storage.get_all_draws()
             if len(all_draws) >= 100:
                 recent_batch = all_draws[-50:]
                 earlier_draws = all_draws[:-50]
@@ -605,7 +656,14 @@ def main():
     p_predict = subparsers.add_parser("predict", help="生成并推送预测")
     p_predict.add_argument("--no-push", action="store_true", help="不推送到PushPlus")
     subparsers.add_parser("fetch-all", help="获取全部历史数据（首次运行，约2885期）")
-    p_run = subparsers.add_parser("run", help="完整运行一次（获取+验证+校准+预测+推送）")
+
+    # 种子文件操作（替代体彩API）
+    p_load_seed = subparsers.add_parser("load-seed", help="从seed_data.json加载历史数据（无需API）")
+    p_load_seed.add_argument("--seed", default="data/seed_data.json", help="种子文件路径")
+    p_export_seed = subparsers.add_parser("export-seed", help="导出当前DB为种子JSON文件")
+    p_export_seed.add_argument("--output", default="data/seed_data.json", help="输出路径")
+
+    p_run = subparsers.add_parser("run", help="完整运行一次（验证+校准+预测+推送，纯本地）")
     p_run.add_argument("--no-push", action="store_true", help="不推送到PushPlus")
 
     args = parser.parse_args()
@@ -618,6 +676,8 @@ def main():
         "init": cmd_init,
         "fetch": cmd_fetch,
         "fetch-all": cmd_fetch_all,
+        "load-seed": cmd_load_seed,
+        "export-seed": cmd_export_seed,
         "verify": cmd_verify,
         "calibrate": cmd_calibrate,
         "backtest": cmd_backtest,

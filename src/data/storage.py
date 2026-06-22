@@ -552,3 +552,36 @@ class LotteryStorage:
                 "SELECT DISTINCT issue FROM verifications"
             ).fetchall()
             return {r[0] for r in rows}
+
+    def load_from_seed(self, seed_path: str) -> int:
+        """
+        从JSON种子文件加载历史开奖数据（用于GitHub Actions等无法访问体彩API的环境）
+        返回成功导入的记录数
+        """
+        import json as _json
+        with open(seed_path, "r", encoding="utf-8") as f:
+            data = _json.load(f)
+
+        if isinstance(data, list):
+            draws = data
+        elif isinstance(data, dict) and "draws" in data:
+            draws = data["draws"]
+        else:
+            raise ValueError(f"种子文件格式错误: 期望list或{{draws: [...]}}")
+
+        count = 0
+        for d in draws:
+            issue = d.get("issue", "")
+            draw_date = d.get("draw_date", "")
+            front = d.get("front", [])
+            back = d.get("back", [])
+            if not issue or not front or not back:
+                continue
+            if self.save_draw(issue, draw_date, front, back):
+                count += 1
+
+        total = self.count()
+        first = self.get_first_issue()
+        last = self.get_latest_issue()
+        print(f"[种子加载] 导入 {count} 条新记录，总计 {total} 期 ({first} ~ {last})")
+        return count

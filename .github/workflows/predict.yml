@@ -29,42 +29,58 @@ jobs:
         run: pip install -r requirements.txt
 
       # ═══════════════════════════════════════════
-      # 数据库缓存（DB不纳入git，用Actions Cache持久化）
+      # 数据库初始化（纯本地模式，不依赖任何外部API）
+      # 优先级：缓存DB > seed_data.json > 报错退出
       # ═══════════════════════════════════════════
       - name: 恢复数据库缓存
         id: cache-db
         uses: actions/cache@v4
         with:
           path: data/daletou.db
-          key: daletou-db-${{ runner.os }}-py311-${{ hashFiles('**/requirements.txt') }}
+          key: daletou-db-v2-${{ runner.os }}-py311-${{ hashFiles('data/seed_data.json') }}
           restore-keys: |
-            daletou-db-${{ runner.os }}-py311-
+            daletou-db-v2-${{ runner.os }}-py311-
 
-      - name: 缓存未命中时初始化数据库
+      - name: 初始化数据库（缓存未命中时从种子文件加载）
         if: steps.cache-db.outputs.cache-hit != 'true'
         run: |
-          echo "[缓存] 首次运行或缓存过期，从体彩API拉取全量数据..."
+          echo "[数据] 缓存未命中，检查种子文件..."
+          if [ ! -f data/seed_data.json ]; then
+            echo "❌ seed_data.json 不存在！无法初始化数据库"
+            echo "   请确保仓库中包含 data/seed_data.json 文件"
+            exit 1
+          fi
+          SEED_SIZE=$(stat -c%s data/seed_data.json)
+          echo "[数据] 种子文件大小: ${SEED_SIZE} bytes"
           python main.py init
-          python main.py fetch-all
-          echo "[缓存] 全量数据拉取完成"
+          python main.py load-seed
 
-      - name: 验证数据库可用
+      - name: 确认数据库就绪
         run: |
           if [ -f data/daletou.db ]; then
-            COUNT=$(python -c "import sqlite3; print(sqlite3.connect('data/daletou.db').execute('SELECT COUNT(*) FROM draws').fetchone()[0])")
-            echo "[数据库] 当前 $COUNT 期数据"
-            if [ "$COUNT" -lt 100 ]; then
-              echo "[数据库] ⚠️ 数据不足100期，执行全量获取..."
-              python main.py fetch-all
+            COUNT=$(python -c "
+          import sqlite3
+          conn = sqlite3.connect('data/daletou.db')
+          count = conn.execute('SELECT COUNT(*) FROM draws').fetchone()[0]
+              latest = conn.execute('SELECT issue FROM draws ORDER BY issue DESC LIMIT 1').fetchone()
+          print(f'{count}|{latest[0] if latest else \"?\"}')
+          conn.close()
+          ")
+            COUNT=$(echo "$COUNT" | cut -d'|' -f1)
+            LATEST=$(echo "$COUNT" | cut -d'|' -f2)
+            echo "✅ 数据库已就绪: ${COUNT} 期 (最新: ${LATEST})"
+            if [ "$COUNT" -lt 10 ]; then
+              echo "❌ 数据不足10期，预测无法执行！"
+              echo "   请更新 data/seed_data.json 后重新运行"
+              exit 1
             fi
           else
-            echo "[数据库] ❌ 数据库不存在，执行初始化..."
-            python main.py init
-            python main.py fetch-all
+            echo "❌ 数据库不存在！"
+            exit 1
           fi
 
       # ═══════════════════════════════════════════
-      # 步骤A：写入Token（必须成功）
+      # 写入Token（必须成功）
       # ═══════════════════════════════════════════
       - name: 写入Token到config
         env:
@@ -84,10 +100,7 @@ jobs:
           fi
 
       # ═══════════════════════════════════════════
-      # 步骤B：推送预检（尽力而为，不阻断主流程）
-      # code=999 反垃圾 → 警告但继续（主流程内容不同不会被拦）
-      # 真正的网络错误/token错误 → 也只警告，不阻断
-      # 预检只是辅助诊断，预测才是核心任务
+      # 推送预检（非阻塞，失败不影响主流程）
       # ═══════════════════════════════════════════
       - name: 推送通道预检（非阻塞）
         if: always()
@@ -104,7 +117,6 @@ jobs:
               cfg = yaml.safe_load(f)
           token = cfg.get('pushplus', {}).get('token', '')
 
-          # 带时间戳+Run ID确保每次内容唯一（避免PushPlus反垃圾code=999）
           bj = datetime.now(timezone(timedelta(hours=8)))
           ts = bj.strftime('%m-%d %H:%M')
           rid = os.environ.get('GITHUB_RUN_ID', '?')
@@ -132,30 +144,29 @@ jobs:
                   print(f'✅ 预检成功: {body.get(\"msg\", \"\")}')
               elif code == 999:
                   print(f'⚠️ 预检被反垃圾拦截(code=999): {body.get(\"msg\", \"\")}')
-                  print('   原因：短时间内推送了相似内容')
-                  print('   ⚠️  不影响主流程！预测消息内容不同，可正常发送')
+                  print('   ⚠️  不影响主流程，继续执行...')
               else:
                   print(f'⚠️ API返回异常(code={code}): {body}')
-                  print('   ⚠️  不阻断主流程，继续执行预测...')
+                  print('   ⚠️  不阻断主流程，继续执行...')
           except Exception as e:
               print(f'⚠️ 预检请求异常: {type(e).__name__}: {e}')
-              print('   ⚠️  不阻断主流程，继续执行预测...')
+              print('   ⚠️  不阻断主流程，继续执行...')
 
           print('')
           print('═══════════════════════════════════════')
           "
 
       # ═══════════════════════════════════════════
-      # 主运行流程（核心步骤，无论预检结果都执行）
+      # 主运行（核心步骤：验证 + 校准 + 预测 + 推送）
+      # 纯本地模式，不调任何外部API
       # ═══════════════════════════════════════════
-      - name: 完整运行（获取最新开奖 + 验证上期 + 校准 + 预测下期 + 推送）
+      - name: 完整运行（验证上期 + 校准 + 预测下期 + 推送）
         id: main-run
-        if: always()  # 无论预检是否成功都执行
+        if: always()
         run: python main.py run
 
       # ═══════════════════════════════════════════
-      # 后置推送验证（用与预检完全相同的代码路径）
-      # 如果预检收到了但预测没收到，这条消息能帮助定位问题
+      # 后置推送验证
       # ═══════════════════════════════════════════
       - name: 后置推送验证
         if: always()
@@ -164,7 +175,6 @@ jobs:
           echo "  后置推送验证"
           echo "═══════════════════════════════════════"
 
-          # 读取push_result.json（如果存在）
           if [ -f push_result.json ]; then
             python -c "
           import json
@@ -222,7 +232,7 @@ jobs:
           echo "═══════════════════════════════════════"
 
       # ═══════════════════════════════════════════
-      # 后置检查
+      # 结果检查与诊断
       # ═══════════════════════════════════════════
       - name: 检查推送结果
         if: always()
@@ -231,7 +241,6 @@ jobs:
           echo "  推送结果最终检查 + 诊断信息"
           echo "═══════════════════════════════════════"
 
-          # 1. 显示诊断文件（追踪 cmd_predict 执行到了哪里）
           if [ -f predict_diagnostic.json ]; then
             echo ""
             echo "📋 predict_diagnostic.json（执行路径追踪）:"
@@ -248,7 +257,6 @@ jobs:
             echo "  ⚠️ predict_diagnostic.json 不存在 → cmd_predict 可能未被调用"
           fi
 
-          # 2. 显示推送结果
           if [ -f push_result.json ]; then
             echo ""
             echo "📋 push_result.json:"
@@ -298,3 +306,13 @@ jobs:
       - name: 打印系统健康度
         if: always()
         run: python main.py health || true
+
+      # ═══════════════════════════════════════════
+      # 保存数据库到缓存（下次运行可快速恢复）
+      # ═══════════════════════════════════════════
+      - name: Post 保存数据库缓存
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: data/daletou.db
+          key: daletou-db-v2-${{ runner.os }}-py311-${{ hashFiles('data/seed_data.json') }}
