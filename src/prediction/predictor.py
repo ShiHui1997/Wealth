@@ -21,20 +21,34 @@ class DaletouPredictor:
     def predict(self, draws: List[Dict], top_n: int = 3,
                 candidates_count: int = 1000,
                 storage=None,
-                random_seed: int = None) -> List[Tuple[Dict, float]]:
+                random_seed: int = None,
+                next_issue: str = None) -> List[Tuple[Dict, float]]:
         """
         预测下一期号码
         使用固定随机种子，确保同样的历史数据每次得出相同结果
         random_seed: 随机种子，None 时从数据库自动读取（推荐）
         storage: 必须传入，用于加载校准权重和读取当前种子
+        next_issue: 要预测的期号（如 "26070"），用于将期号纳入种子计算，
+                    保证每期预测结果不同，同时同一期多次运行结果一致
         Returns: [(号码dict, 相似度得分), ...] 按得分降序
         """
-        # 从数据库读取种子（若未显式指定）
-        if storage and random_seed is None:
-            random_seed = storage.get_current_seed()
+        # 种子计算策略:
+        #   base_seed (来自数据库/校准轮换) + 当前要预测的期号数值
+        #   效果: 同一期多次运行 → 结果相同(确定性); 不同期 → 自然不同
         if random_seed is None:
-            random_seed = 42
+            base_seed = 42
+            if storage:
+                base_seed = storage.get_current_seed()
+            issue_offset = 0
+            if next_issue:
+                try:
+                    issue_offset = int(next_issue)
+                except (ValueError, TypeError):
+                    pass
+            random_seed = base_seed + issue_offset
         random.seed(random_seed)
+        print(f"[预测] 使用种子: {random_seed} "
+              f"(基础={base_seed if storage else 42} + 期号={next_issue or 'N/A'})")
 
         print(f"\n[预测] 基于最近 {len(draws)} 期数据进行分析...")
 

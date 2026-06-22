@@ -32,9 +32,12 @@ class SelfCalibrator:
         返回新的权重配置
         """
         stats = self.storage.get_verification_stats()
-        if stats["total_verified"] < 10 and not force:
+        # 首次校准门槛: 5期（让系统尽早开始学习）
+        # 后续校准: 每积累新数据就重新校准
+        min_threshold = 5
+        if stats["total_verified"] < min_threshold and not force:
             print(f"[校准] 验证数据不足（{stats['total_verified']}期），"
-                  f"需要至少10期才能校准")
+                  f"需要至少{min_threshold}期才能校准")
             return self._load_current_weights()
 
         print(f"\n[校准] 基于 {stats['total_verified']} 期验证结果进行自我调整...")

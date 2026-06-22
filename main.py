@@ -195,19 +195,20 @@ def cmd_predict(args, config):
     top_n = config["prediction"]["recommend_count"]
     candidates_count = config["prediction"]["candidate_count"]
     # random_seed 不再从 config.yaml 读取，由 predictor 自动从数据库获取
+    latest_issue = storage.get_latest_issue()
+    next_issue = _calc_next_issue(latest_issue) if latest_issue else "未知"
     prediction = predictor.predict(
         draws,
         top_n=top_n,
         candidates_count=candidates_count,
         storage=storage,
+        next_issue=next_issue,
     )
 
     # 打印结果
     print("\n" + predictor.format_prediction(prediction))
 
     # 保存预测记录到数据库
-    latest_issue = storage.get_latest_issue()
-    next_issue = _calc_next_issue(latest_issue) if latest_issue else "未知"
     storage.save_prediction(next_issue, prediction)
 
     # 推送到PushPlus
@@ -265,22 +266,45 @@ def cmd_run(args, config):
     except Exception as e:
         print(f"[步骤2/5] 回归分析失败: {e}")
 
-    # 第三步：验证上期预测
+    # 第三步：验证上期预测 + 自动补验证所有遗漏的期号
     print("\n[步骤3/5] 验证上期预测...")
     storage_r = LotteryStorage(config["database"]["path"])
     cmd_verify(argparse.Namespace(issue=None), config)
 
+    # 自动补验证: 扫描"有预测记录+有开奖数据+未验证"的期号
+    try:
+        all_draws = storage_r.get_all_draws()
+        draw_issues = {d["issue"] for d in all_draws}
+        pred_issues = storage_r.get_all_predicted_issues()
+        verified_issues = storage_r.get_all_verified_issues()
+
+        pending = set(pred_issues) & draw_issues - verified_issues
+        if pending:
+            print(f"[自动补验] 发现 {len(pending)} 期待补验证: {sorted(pending)}")
+            for issue in sorted(pending):
+                result = storage_r.verify_prediction(issue)
+                if result:
+                    front_m = result.get("best_front_match", 0)
+                    back_m = result.get("best_back_match", 0)
+                    print(f"  ✓ {issue}期: 前区命中{front_m} 后区命中{back_m}")
+                else:
+                    print(f"  ✗ {issue}期: 验证失败")
+        else:
+            print("[自动补验] 无遗漏的验证项")
+    except Exception as e:
+        print(f"[自动补验] 补验证过程出错: {e}")
+
     # 第四步：校准（如果数据足够）
     stats = storage_r.get_verification_stats()
-    if stats["total_verified"] >= 10:
+    if stats["total_verified"] >= 5:
         print("\n[步骤4/5] 执行自我校准...")
         cmd_calibrate(argparse.Namespace(force=False), config)
     else:
-        print(f"\n[步骤4/5] 跳过校准（已验证{stats['total_verified']}期，需要>=10期）")
+        print(f"\n[步骤4/5] 跳过校准（已验证{stats['total_verified']}期，需要>=5期）")
 
-    # 第五步：预测下期并推送（run 模式下始终推送）
+    # 第五步：预测下期并推送（run 模式下默认推送，--no-push 时跳过）
     print("\n[步骤5/5] 生成并推送下期预测...")
-    predict_args = argparse.Namespace(no_push=False)
+    predict_args = argparse.Namespace(no_push=getattr(args, 'no_push', False))
     cmd_predict(predict_args, config)
 
     print(f"\n{'='*50}")
@@ -346,7 +370,8 @@ def main():
     p_predict = subparsers.add_parser("predict", help="生成并推送预测")
     p_predict.add_argument("--no-push", action="store_true", help="不推送到PushPlus")
     subparsers.add_parser("fetch-all", help="获取全部历史数据（首次运行，约2885期）")
-    subparsers.add_parser("run", help="完整运行一次（获取+验证+校准+预测+推送）")
+    p_run = subparsers.add_parser("run", help="完整运行一次（获取+验证+校准+预测+推送）")
+    p_run.add_argument("--no-push", action="store_true", help="不推送到PushPlus")
 
     args = parser.parse_args()
     if not args.command:

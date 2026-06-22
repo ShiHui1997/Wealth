@@ -436,11 +436,11 @@ class LotteryStorage:
     def get_verification_stats(self) -> Dict:
         """汇总所有验证结果，用于评估预测效果"""
         with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
             rows = conn.execute("SELECT * FROM verifications ORDER BY issue ASC").fetchall()
             if not rows:
                 return {"total_verified": 0}
 
-            conn.row_factory = sqlite3.Row
             rows = [dict(r) for r in rows]
 
             total = len(rows)
@@ -536,3 +536,19 @@ class LotteryStorage:
                     note = excluded.note
             """, (datetime.now().isoformat(), float(seed), f"种子={seed}"))
             conn.commit()
+
+    def get_all_predicted_issues(self) -> set:
+        """返回所有有预测记录的期号集合（用于自动补验证）"""
+        with sqlite3.connect(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT target_issue FROM predictions"
+            ).fetchall()
+            return {r[0] for r in rows}
+
+    def get_all_verified_issues(self) -> set:
+        """返回所有已验证的期号集合"""
+        with sqlite3.connect(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT issue FROM verifications"
+            ).fetchall()
+            return {r[0] for r in rows}
