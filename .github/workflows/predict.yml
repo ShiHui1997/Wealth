@@ -138,6 +138,74 @@ jobs:
         run: python main.py run
 
       # ═══════════════════════════════════════════
+      # 后置推送验证（用与预检完全相同的代码路径）
+      # 如果预检收到了但预测没收到，这条消息能帮助定位问题
+      # ═══════════════════════════════════════════
+      - name: 后置推送验证
+        if: always()
+        run: |
+          echo "═══════════════════════════════════════"
+          echo "  后置推送验证"
+          echo "═══════════════════════════════════════"
+
+          # 读取push_result.json（如果存在）
+          if [ -f push_result.json ]; then
+            python -c "
+          import json
+          with open('push_result.json') as f:
+              r = json.load(f)
+          print(f'  push_result.json: status={r.get(\"status\")} issue={r.get(\"issue\")} reason={r.get(\"reason\",\"\")})'
+          "
+          else
+            echo "  ⚠️ push_result.json 不存在"
+          fi
+
+          echo ""
+          echo "[后置验证] 发送确认消息到PushPlus..."
+          python -c "
+          import json, urllib.request, ssl, yaml
+
+          with open('config/config.yaml') as f:
+              cfg = yaml.safe_load(f)
+          token = cfg.get('pushplus', {}).get('token', '')
+          print(f'Token长度: {len(token)}')
+
+          if not token:
+              print('❌ Token为空！')
+              exit(0)
+
+          payload = {
+              'token': token,
+              'title': '✅ 后置验证 - Actions运行完成',
+              'content': '''
+          <p><b>GitHub Actions 运行完成</b></p>
+          <p>如果你只收到这条消息而没收到预测消息，说明主运行流程中的推送环节有问题。</p>
+          <p>请将此情况反馈给开发者。</p>
+          <hr>
+          <p style=\"color:#888;font-size:12px;\">时间: $(date -u '+%Y-%m-%d %H:%M:%S UTC')</p>
+          ''',
+              'template': 'html',
+          }
+          ctx = ssl.create_default_context()
+          req = urllib.request.Request(
+              'https://www.pushplus.plus/send',
+              data=json.dumps(payload).encode('utf-8'),
+              headers={'Content-Type': 'application/json'},
+              method='POST'
+          )
+          resp = urllib.request.urlopen(req, timeout=30, context=ctx)
+          body = json.loads(resp.read().decode('utf-8'))
+          print(f'API响应: {body}')
+          if body.get('code') == 200:
+              print('✅ 后置验证推送成功！（手机应收到「✅ 后置验证」消息）')
+          else:
+              print(f'❌ API返回错误: {body}')
+          "
+
+          echo ""
+          echo "═══════════════════════════════════════"
+
+      # ═══════════════════════════════════════════
       # 后置检查
       # ═══════════════════════════════════════════
       - name: 检查推送结果

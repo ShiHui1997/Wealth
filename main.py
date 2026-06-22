@@ -344,7 +344,9 @@ def cmd_predict(args, config):
 def cmd_run(args, config):
     """完整运行一次：获取最新开奖 + 回归分析 + 验证上期预测 + 校准 + 预测下期 + 推送"""
     storage = LotteryStorage(config["database"]["path"])
-    notifier = PushPlusNotifier(config["pushplus"]["token"])
+    # 安全读取token（兼容config结构变化）
+    _token = config.get("pushplus", {}).get("token", "")
+    notifier = PushPlusNotifier(_token)
     health_checker = HealthChecker(notifier)
     logger = RunLogger()
 
