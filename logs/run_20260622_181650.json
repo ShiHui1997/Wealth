@@ -1,0 +1,67 @@
+{
+  "start_time": "2026-06-22T18:16:50.913356",
+  "end_time": "2026-06-22T18:17:06.907417",
+  "duration_sec": 16.0,
+  "total_steps": 5,
+  "ok_count": 3,
+  "warning_count": 2,
+  "error_count": 0,
+  "overall_status": "warning",
+  "steps": [
+    {
+      "id": "step_1",
+      "name": "获取最新开奖",
+      "detail": "从体彩API拉取",
+      "start": "2026-06-22T18:16:50.913416",
+      "status": "ok",
+      "end": "2026-06-22T18:17:06.904298",
+      "result": "获取完成",
+      "error": "",
+      "duration_sec": 15.990882
+    },
+    {
+      "id": "step_2",
+      "name": "回归分析",
+      "detail": "最近50期 vs 历史",
+      "start": "2026-06-22T18:17:06.904324",
+      "status": "warning",
+      "end": "2026-06-22T18:17:06.904844",
+      "result": "数据不足100期，跳过",
+      "error": "",
+      "duration_sec": 0.00052
+    },
+    {
+      "id": "step_3",
+      "name": "验证预测",
+      "detail": "验证上期 + 补验证遗漏",
+      "start": "2026-06-22T18:17:06.904859",
+      "status": "ok",
+      "end": "2026-06-22T18:17:06.906525",
+      "result": "已验证0期",
+      "error": "",
+      "duration_sec": 0.001666
+    },
+    {
+      "id": "step_4",
+      "name": "自我校准",
+      "detail": "权重调整 + Walk-Forward",
+      "start": "2026-06-22T18:17:06.906539",
+      "status": "warning",
+      "end": "2026-06-22T18:17:06.906744",
+      "result": "跳过校准（已验证0期，需要>=5期）",
+      "error": "",
+      "duration_sec": 0.000205
+    },
+    {
+      "id": "step_5",
+      "name": "生成预测",
+      "detail": "多尺度融合打分 + 推送",
+      "start": "2026-06-22T18:17:06.906755",
+      "status": "ok",
+      "end": "2026-06-22T18:17:06.907292",
+      "result": "预测完成",
+      "error": "",
+      "duration_sec": 0.000537
+    }
+  ]
+}
