@@ -212,9 +212,30 @@ jobs:
         if: always()
         run: |
           echo "═══════════════════════════════════════"
-          echo "  推送结果最终检查"
+          echo "  推送结果最终检查 + 诊断信息"
           echo "═══════════════════════════════════════"
+
+          # 1. 显示诊断文件（追踪 cmd_predict 执行到了哪里）
+          if [ -f predict_diagnostic.json ]; then
+            echo ""
+            echo "📋 predict_diagnostic.json（执行路径追踪）:"
+            python -c "
+          import json
+          with open('predict_diagnostic.json') as f:
+              d = json.load(f)
+          for k, v in d.items():
+              if not k.startswith('_'):
+                  print(f'    {k}: {v}')
+          "
+          else
+            echo ""
+            echo "  ⚠️ predict_diagnostic.json 不存在 → cmd_predict 可能未被调用"
+          fi
+
+          # 2. 显示推送结果
           if [ -f push_result.json ]; then
+            echo ""
+            echo "📋 push_result.json:"
             python -c "
           import json, sys
           with open('push_result.json') as f:
@@ -237,22 +258,22 @@ jobs:
           if api_resp:
               print(f'  API响应: {api_resp}')
 
-          # 如果推送失败，以非零退出 → 让此步骤变红
           if status != 'success':
               print('')
               print('  ⛔ 推送未成功！此步骤将以失败状态退出')
               sys.exit(1)
           "
-            echo "═══════════════════════════════════════"
           else
+            echo ""
             echo "  ⚠️ push_result.json 不存在"
-            echo "  可能原因："
-            echo "    1. 数据不足10期 → cmd_predict提前退出"
-            echo "    2. 运行过程中发生未捕获异常"
-            echo "    3. --no-push 被指定"
-            echo "═══════════════════════════════════════"
-            echo "::warning::push_result.json 不存在，可能未执行推送"
+            echo "  → cmd_predict 的推送代码路径未执行到"
+            echo ""
+            echo "  请查看上方 predict_diagnostic.json 确认执行断点"
+            echo "::error::push_result.json 不存在 - 推送代码未执行"
           fi
+
+          echo ""
+          echo "═══════════════════════════════════════"
 
       - name: 打印校准状态
         if: always()

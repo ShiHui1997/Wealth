@@ -277,12 +277,18 @@ def cmd_stats(args, config):
 
 def cmd_predict(args, config):
     """生成预测并推送"""
+    _write_diagnostic("status", "started")
+    _write_diagnostic("entry_time", __import__("datetime").datetime.now().isoformat())
+
     storage = LotteryStorage(config["database"]["path"])
     # 使用全部历史数据（而非仅最近N期），确保特征学习最充分
     draws = storage.get_all_draws()
 
+    _write_diagnostic("draws_count", len(draws))
+
     if len(draws) < 10:
         print(f"[预测] 历史数据不足（仅{len(draws)}期），至少需要10期")
+        _write_diagnostic("exit_reason", "insufficient_data")
         return
 
     predictor = DaletouPredictor()
@@ -290,6 +296,11 @@ def cmd_predict(args, config):
     candidates_count = config["prediction"]["candidate_count"]
     latest_issue = storage.get_latest_issue()
     next_issue = _calc_next_issue(latest_issue) if latest_issue else "未知"
+
+    _write_diagnostic("latest_issue", str(latest_issue))
+    _write_diagnostic("next_issue", str(next_issue))
+
+    print(f"[预测] 开始预测第 {next_issue} 期...")
     prediction = predictor.predict(
         draws,
         top_n=top_n,
@@ -299,16 +310,30 @@ def cmd_predict(args, config):
         use_multi_scale=True,
     )
 
+    _write_diagnostic("prediction_count", len(prediction))
+
     # 打印结果
     print("\n" + predictor.format_prediction(prediction))
 
     # 保存预测记录到数据库
     storage.save_prediction(next_issue, prediction)
+    _write_diagnostic("db_saved", "ok")
+
+    # ══════════════════════════════════
+    # 推送阶段 - 全链路诊断日志
+    # ══════════════════════════════════
+    _write_diagnostic("push_phase", "entering")
 
     # 推送到PushPlus
     push_result = "SKIPPED"
-    if not getattr(args, 'no_push', False):
+    no_push = getattr(args, 'no_push', False)
+    _write_diagnostic("no_push_flag", no_push)
+
+    if not no_push:
         token = config.get("pushplus", {}).get("token", "")
+        _write_diagnostic("token_length", len(token))
+        _write_diagnostic("token_prefix", token[:6] if len(token) >= 6 else token)
+
         print("=" * 50)
         print(f"[推送] PushPlus Token: {'已配置 ({}字符)'.format(len(token)) if token else '❌ 未配置/为空!'}")
 
@@ -316,24 +341,34 @@ def cmd_predict(args, config):
             print("[推送] ⚠️ Token为空，跳过推送！请检查Secrets中PUSHPLUS_TOKEN是否正确设置")
             push_result = "FAILED_NO_TOKEN"
             _write_push_result({"status": "failed", "reason": "token_empty", "issue": next_issue})
+            _write_diagnostic("push_result", "failed_token_empty")
             print("[推送] ⛔ 因Token为空，以退出码1退出（让GitHub Actions显示失败）")
             sys.exit(1)
         else:
+            _write_diagnostic("push_phase", "creating_notifier")
             notifier = PushPlusNotifier(token)
             submit_url = config.get("submit", {}).get("url", "")
             html_content = predictor.format_prediction_html(prediction, submit_url=submit_url)
+
+            _write_diagnostic("html_content_length", len(html_content))
             print(f"[推送] HTML内容长度: {len(html_content)} 字符")
+
+            _write_diagnostic("push_phase", "calling_send")
             try:
                 success = notifier.send_prediction(html_content, next_issue)
+                _write_diagnostic("send_return_value", success)
+
                 if success:
                     print(f"[推送] ✅ 第{next_issue}期预测已推送到微信")
                     push_result = "SUCCESS"
                     _write_push_result({"status": "success", "issue": next_issue})
+                    _write_diagnostic("push_result", "success")
                 else:
                     # 理论上走不到这里（send_prediction 失败会抛异常）
                     print("[推送] ❌ 推送返回False（不应走到这里）")
                     push_result = "FAILED_UNEXPECTED"
                     _write_push_result({"status": "failed", "reason": "unexpected_false", "issue": next_issue})
+                    _write_diagnostic("push_result", "unexpected_false")
                     sys.exit(1)
             except Exception as e:
                 # PushPlusError 或其他异常 → 推送失败
@@ -350,16 +385,21 @@ def cmd_predict(args, config):
                     "api_response": getattr(e, 'api_response', {}),
                     "issue": next_issue
                 })
+                _write_diagnostic("push_result", f"exception_{error_type}")
+                _write_diagnostic("exception_detail", str(e)[:300])
                 sys.exit(1)
             print("=" * 50)
     else:
         push_result = "NO_PUSH_FLAG"
         submit_url = config.get("submit", {}).get("url", "")
         print(f"[预测] --no-push 已指定，跳过推送")
+        _write_diagnostic("push_result", "skipped_no_push_flag")
         if submit_url:
             print(f"[预测] 提交链接: {submit_url}")
         else:
             print(predictor.format_prediction_html(prediction))
+
+    _write_diagnostic("status", "completed")
 
 
 def cmd_run(args, config):
@@ -517,6 +557,24 @@ def _write_push_result(result: dict):
     import json
     with open("push_result.json", "w") as f:
         json.dump(result, f)
+    print(f"[诊断] ✅ 已写入 push_result.json: {result.get('status')} / {result.get('reason', '')}")
+
+
+def _write_diagnostic(key: str, value):
+    """写入诊断标记文件，追踪 cmd_predict 执行到了哪里"""
+    import json
+    path = "predict_diagnostic.json"
+    existing = {}
+    try:
+        with open(path) as f:
+            existing = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
+    existing[key] = value
+    existing["_updated"] = __import__("datetime").datetime.now().isoformat()
+    with open(path, "w") as f:
+        json.dump(existing, f, ensure_ascii=False, indent=2)
+    print(f"[诊断] 📝 predict_diagnostic.json 更新: {key}={value}")
 
 
 def _auto_verify(storage, issue: str):
