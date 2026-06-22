@@ -14,7 +14,9 @@ jobs:
   process-submission:
     runs-on: ubuntu-latest
     # 只处理包含开奖数据的 Issue（标题包含"开奖提交"）
-    if: contains(github.event.issue.title, '开奖提交') || github.event_name == 'workflow_dispatch'
+    if: |
+      (github.event_name == 'issues' && contains(github.event.issue.title, '开奖提交')) ||
+      github.event_name == 'workflow_dispatch'
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
@@ -31,7 +33,7 @@ jobs:
         run: pip install -r requirements.txt
 
       # ═══════════════════════════════════════════
-      # 数据库缓存（DB不纳入git，用Actions Cache持久化）
+      # 数据库缓存
       # ═══════════════════════════════════════════
       - name: 恢复数据库缓存
         id: cache-db
@@ -53,89 +55,14 @@ jobs:
       - name: 写入 PushPlus Token 到配置文件
         env:
           PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
-        run: |
-          python -c "
-          import yaml, os
-          cfg_path = 'config/config.yaml'
-          with open(cfg_path) as f:
-              cfg = yaml.safe_load(f)
-          cfg['pushplus']['token'] = os.environ['PUSHPLUS_TOKEN']
-          with open(cfg_path, 'w') as f:
-              yaml.dump(cfg, f, allow_unicode=True, sort_keys=False)
-          print('PushPlus token 已写入配置')
-          "
+        run: python scripts/write_token.py "$PUSHPLUS_TOKEN"
 
       - name: 解析 Issue 并写入数据库
         env:
           ISSUE_TITLE: ${{ github.event.issue.title }}
           ISSUE_BODY: ${{ github.event.issue.body }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
-        run: python -c "
-import re, json, sqlite3, sys
-
-title = '${{ github.event.issue.title }}'
-body = r'''${{ github.event.issue.body }}'''
-issue_number = ${{ github.event.issue.number }}
-
-print(f'[提交处理] Issue #{issue_number}: {title}')
-print(f'[提交处理] Body 前200字: {body[:200]}')
-
-# 解析期号
-issue_match = re.search(r'开奖提交\s*(\d+)', title)
-if not issue_match:
-    issue_match = re.search(r'期号[：:]\s*\*?(\d+)', body)
-if not issue_match:
-    print('[提交处理] 错误：无法解析期号')
-    sys.exit(1)
-
-issue_no = issue_match.group(1).strip()
-print(f'[提交处理] 期号: {issue_no}')
-
-# 解析前区号码（5个）
-front_match = re.search(r'前区\s*[|]\s*([\d\s]+)', body)
-if front_match:
-    front_nums = [int(x) for x in front_match.group(1).split() if x.strip()]
-else:
-    print('[提交处理] 错误：无法解析前区号码')
-    sys.exit(1)
-
-# 解析后区号码（2个）
-back_match = re.search(r'后区\s*[|]\s*([\d\s]+)', body)
-if back_match:
-    back_nums = [int(x) for x in back_match.group(1).split() if x.strip()]
-else:
-    print('[提交处理] 错误：无法解析后区号码')
-    sys.exit(1)
-
-print(f'[提交处理] 前区: {front_nums}')
-print(f'[提交处理] 后区: {back_nums}')
-
-if len(front_nums) != 5 or len(back_nums) != 2:
-    print(f'[提交处理] 错误：号码数量不对（前区需要5个，后区需要2个）')
-    sys.exit(1)
-
-# 格式化并写入数据库
-front_str = ' '.join(f'{n:02d}' for n in sorted(front_nums))
-back_str = ' '.join(f'{n:02d}' for n in sorted(back_nums))
-
-from datetime import datetime
-draw_date = datetime.now().strftime('%Y-%m-%d')
-
-conn = sqlite3.connect('data/daletou.db')
-try:
-    conn.execute(
-        'INSERT OR IGNORE INTO draws (issue, draw_date, front_numbers, back_numbers, created_at) VALUES (?, ?, ?, ?, ?)',
-        (issue_no, draw_date, f'[{front_str}]', f'[{back_str}]', datetime.now().isoformat())
-    )
-    conn.commit()
-    print(f'[提交处理] ✅ 数据已入库: {issue_no} | {front_str} + {back_str}')
-finally:
-    conn.close()
-
-# 保存解析结果供后续步骤使用
-with open('submission_result.json', 'w') as f:
-    json.dump({'issue': issue_no, 'front': front_str, 'back': back_str}, f)
-"
+        run: python scripts/parse_issue.py
 
       - name: 验证 + 校准 + 预测 + 推送
         run: python main.py run
@@ -157,21 +84,5 @@ with open('submission_result.json', 'w') as f:
       - name: 关闭 Issue 并评论结果
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          ISSUE_NUM=${{ github.event.issue.number }}
-
-          COMMENT_BODY="## ✅ 开奖数据已处理完成\n\n- 📊 **数据库已更新**\n- 🔮 **已重新生成预测**\n- 📱 **推送已发送至微信**\n- 📋 **Walk-Forward回测已执行**\n\n---\n\n*由 GitHub Actions 自动处理 · $(date '+%Y-%m-%d %H:%M')*"
-
-          curl -s -X POST \
-            -H "Authorization: token ${GITHUB_TOKEN}" \
-            -H "Accept: application/vnd.github.v3+json" \
-            "https://api.github.com/repos/ShiHui1997/Wealth/issues/${ISSUE_NUM}/comments" \
-            -d "{\"body\": $(echo "$COMMENT_BODY" | python -c 'import sys,json; print(json.dumps(sys.stdin.read()))')}"
-
-          curl -s -X PATCH \
-            -H "Authorization: token ${GITHUB_TOKEN}" \
-            -H "Accept: application/vnd.github.v3+json" \
-            "https://api.github.com/repos/ShiHui1997/Wealth/issues/${ISSUE_NUM}" \
-            -d '{"state": "closed"}'
-
-          echo "[提交处理] Issue #${ISSUE_NUM} 已关闭"
+          ISSUE_NUM: ${{ github.event.issue.number }}
+        run: python scripts/close_issue.py

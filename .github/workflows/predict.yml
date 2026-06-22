@@ -136,3 +136,39 @@ jobs:
       - name: 打印系统健康度
         if: always()
         run: python main.py health || true
+
+      - name: 检查推送结果
+        if: always()
+        run: |
+          echo "═══════════════════════════════════════"
+          echo "  推送结果检查"
+          echo "═══════════════════════════════════════"
+          if [ -f push_result.json ]; then
+            python -c "
+          import json
+          with open('push_result.json') as f:
+              r = json.load(f)
+          status = r.get('status', 'unknown')
+          issue = r.get('issue', '?')
+          reason = r.get('reason', '')
+          icons = {'success': '✅', 'failed': '❌'}
+          print(f'  状态: {icons.get(status, \"⚠️\")} {status}')
+          print(f'  期号: {issue}')
+          if reason:
+              print(f'  原因: {reason}')
+          if status != 'success':
+              print()
+              print('  ⚠️ 推送未成功！请检查：')
+              print('    1. Secrets中PUSHPLUS_TOKEN是否正确设置')
+              print('    2. Token是否在PushPlus平台有效: http://www.pushplus.plus/')
+              exit(1)
+          "
+            echo "═══════════════════════════════════════"
+          else
+            echo "  ⚠️ push_result.json 不存在（预测可能未执行到推送步骤）"
+            echo "═══════════════════════════════════════"
+            # 列出最近的日志输出帮助排查
+            echo ""
+            echo "最近30行运行输出："
+            tail -n 30 /tmp/step_output.txt 2>/dev/null || echo "(无缓存输出)"
+          fi

@@ -306,12 +306,17 @@ def cmd_predict(args, config):
     storage.save_prediction(next_issue, prediction)
 
     # 推送到PushPlus
+    push_result = "SKIPPED"
     if not getattr(args, 'no_push', False):
         token = config.get("pushplus", {}).get("token", "")
+        print("=" * 50)
         print(f"[推送] PushPlus Token: {'已配置 ({}字符)'.format(len(token)) if token else '❌ 未配置/为空!'}")
 
         if not token:
             print("[推送] ⚠️ Token为空，跳过推送！请检查Secrets中PUSHPLUS_TOKEN是否正确设置")
+            push_result = "FAILED_NO_TOKEN"
+            # 写入推送结果文件供工作流检查
+            _write_push_result({"status": "failed", "reason": "token_empty", "issue": next_issue})
         else:
             notifier = PushPlusNotifier(token)
             submit_url = config.get("submit", {}).get("url", "")
@@ -319,9 +324,15 @@ def cmd_predict(args, config):
             success = notifier.send_prediction(html_content, next_issue)
             if not success:
                 print("[推送] ❌ 推送发送失败！检查Token是否有效: http://www.pushplus.plus/")
+                push_result = "FAILED_API_ERROR"
+                _write_push_result({"status": "failed", "reason": "api_error", "issue": next_issue})
             else:
                 print(f"[推送] ✅ 第{next_issue}期预测已推送到微信")
+                push_result = "SUCCESS"
+                _write_push_result({"status": "success", "issue": next_issue})
+            print("=" * 50)
     else:
+        push_result = "NO_PUSH_FLAG"
         submit_url = config.get("submit", {}).get("url", "")
         print(f"[预测] --no-push 已指定，跳过推送")
         if submit_url:
@@ -476,6 +487,13 @@ def _calc_next_issue(current_issue: str) -> str:
             return str(n + 1)
         except Exception:
             return current_issue
+
+
+def _write_push_result(result: dict):
+    """写入推送结果文件供 GitHub Actions 检查"""
+    import json
+    with open("push_result.json", "w") as f:
+        json.dump(result, f)
 
 
 def _auto_verify(storage, issue: str):
