@@ -29,8 +29,7 @@ jobs:
         run: pip install -r requirements.txt
 
       # ═══════════════════════════════════════════
-      # 数据库初始化（纯本地模式，不依赖任何外部API）
-      # 优先级：缓存DB > seed_data.json > 报错退出
+      # 数据库初始化（纯本地模式）
       # ═══════════════════════════════════════════
       - name: 恢复数据库缓存
         id: cache-db
@@ -41,37 +40,21 @@ jobs:
           restore-keys: |
             daletou-db-v2-${{ runner.os }}-py311-
 
-      - name: 初始化数据库（缓存未命中时从种子文件加载）
+      - name: 初始化数据库（缓存未命中时从种子加载）
         if: steps.cache-db.outputs.cache-hit != 'true'
         run: |
-          echo "[数据] 缓存未命中，检查种子文件..."
-          if [ ! -f data/seed_data.json ]; then
-            echo "❌ seed_data.json 不存在！无法初始化数据库"
-            echo "   请确保仓库中包含 data/seed_data.json 文件"
-            exit 1
-          fi
-          SEED_SIZE=$(stat -c%s data/seed_data.json)
-          echo "[数据] 种子文件大小: ${SEED_SIZE} bytes"
-          python main.py init
-          python main.py load-seed
+          echo "[数据] 缓存未命中，从种子加载..."
+          python main.py init && python main.py load-seed
 
       - name: 确认数据库就绪
         run: |
           if [ -f data/daletou.db ]; then
-            COUNT=$(python -c "
-          import sqlite3
-          conn = sqlite3.connect('data/daletou.db')
-          count = conn.execute('SELECT COUNT(*) FROM draws').fetchone()[0]
-              latest = conn.execute('SELECT issue FROM draws ORDER BY issue DESC LIMIT 1').fetchone()
-          print(f'{count}|{latest[0] if latest else \"?\"}')
-          conn.close()
-          ")
-            COUNT=$(echo "$COUNT" | cut -d'|' -f1)
-            LATEST=$(echo "$COUNT" | cut -d'|' -f2)
+            RESULT=$(python -c "import sqlite3;c=sqlite3.connect('data/daletou.db');n=c.execute('SELECT COUNT(*) FROM draws').fetchone()[0];l=c.execute('SELECT issue FROM draws ORDER BY issue DESC LIMIT 1').fetchone();print(f'{n}|{l[0] if l else \"?\"}');c.close()")
+            COUNT=$(echo "$RESULT" | cut -d'|' -f1)
+            LATEST=$(echo "$RESULT" | cut -d'|' -f2)
             echo "✅ 数据库已就绪: ${COUNT} 期 (最新: ${LATEST})"
             if [ "$COUNT" -lt 10 ]; then
-              echo "❌ 数据不足10期，预测无法执行！"
-              echo "   请更新 data/seed_data.json 后重新运行"
+              echo "❌ 数据不足10期！"
               exit 1
             fi
           else
@@ -80,224 +63,43 @@ jobs:
           fi
 
       # ═══════════════════════════════════════════
-      # 写入Token（必须成功）
+      # 写入Token + 预检
       # ═══════════════════════════════════════════
       - name: 写入Token到config
         env:
           PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
         run: |
           python scripts/write_token.py
-          TOKEN_LEN=$(python -c "
-          import yaml
-          with open('config/config.yaml') as f:
-              cfg = yaml.safe_load(f)
-          print(len(cfg.get('pushplus', {}).get('token', '')))
-          ")
-          echo "✅ Token已写入，长度: $TOKEN_LEN"
+          TOKEN_LEN=$(python -c "import yaml;cfg=yaml.safe_load(open('config/config.yaml'));print(len(cfg.get('pushplus',{}).get('token','')))")
+          TOKEN_PREFIX=$(python -c "import yaml;cfg=yaml.safe_load(open('config/config.yaml'));t=cfg.get('pushplus',{}).get('token','');print(t[:6] if len(t)>=6 else t)")
+          echo "✅ Token已写入: 长度=$TOKEN_LEN 前6位=$TOKEN_PREFIX"
           if [ "$TOKEN_LEN" -lt 10 ]; then
-            echo "❌ Token过短！"
+            echo "❌ Token过短！请检查Secrets中PUSHPLUS_TOKEN"
             exit 1
           fi
 
-      # ═══════════════════════════════════════════
-      # 推送预检（非阻塞，失败不影响主流程）
-      # ═══════════════════════════════════════════
       - name: 推送通道预检（非阻塞）
         if: always()
-        run: |
-          echo "═══════════════════════════════════════"
-          echo "  推送预检（失败不阻断主流程）"
-          echo "═══════════════════════════════════════"
-
-          python -c "
-          import json, urllib.request, ssl, os, yaml
-          from datetime import datetime, timezone, timedelta
-
-          with open('config/config.yaml') as f:
-              cfg = yaml.safe_load(f)
-          token = cfg.get('pushplus', {}).get('token', '')
-
-          bj = datetime.now(timezone(timedelta(hours=8)))
-          ts = bj.strftime('%m-%d %H:%M')
-          rid = os.environ.get('GITHUB_RUN_ID', '?')
-
-          payload = {
-              'token': token,
-              'title': f'🔧 预检 {ts} #{rid}',
-              'content': f'<p>预检通过 ✅ | Run #{rid} | {ts}</p>',
-              'template': 'html',
-          }
-
-          try:
-              ctx = ssl.create_default_context()
-              req = urllib.request.Request(
-                  'https://www.pushplus.plus/send',
-                  data=json.dumps(payload).encode('utf-8'),
-                  headers={'Content-Type': 'application/json'},
-                  method='POST'
-              )
-              resp = urllib.request.urlopen(req, timeout=30, context=ctx)
-              body = json.loads(resp.read().decode('utf-8'))
-              code = body.get('code', -1)
-
-              if code == 200:
-                  print(f'✅ 预检成功: {body.get(\"msg\", \"\")}')
-              elif code == 999:
-                  print(f'⚠️ 预检被反垃圾拦截(code=999): {body.get(\"msg\", \"\")}')
-                  print('   ⚠️  不影响主流程，继续执行...')
-              else:
-                  print(f'⚠️ API返回异常(code={code}): {body}')
-                  print('   ⚠️  不阻断主流程，继续执行...')
-          except Exception as e:
-              print(f'⚠️ 预检请求异常: {type(e).__name__}: {e}')
-              print('   ⚠️  不阻断主流程，继续执行...')
-
-          print('')
-          print('═══════════════════════════════════════')
-          "
+        run: python scripts/precheck_push.py
 
       # ═══════════════════════════════════════════
-      # 主运行（核心步骤：验证 + 校准 + 预测 + 推送）
-      # 纯本地模式，不调任何外部API
+      # 主运行（核心步骤）
       # ═══════════════════════════════════════════
-      - name: 完整运行（验证上期 + 校准 + 预测下期 + 推送）
+      - name: 完整运行（验证 + 校准 + 预测 + 推送）
         id: main-run
         if: always()
         run: python main.py run
 
       # ═══════════════════════════════════════════
-      # 后置推送验证
+      # 后置验证与结果检查
       # ═══════════════════════════════════════════
       - name: 后置推送验证
         if: always()
-        run: |
-          echo "═══════════════════════════════════════"
-          echo "  后置推送验证"
-          echo "═══════════════════════════════════════"
+        run: python scripts/postcheck_push.py || true
 
-          if [ -f push_result.json ]; then
-            python -c "
-          import json
-          with open('push_result.json') as f:
-              r = json.load(f)
-          print(f'  push_result.json: status={r.get(\"status\")} issue={r.get(\"issue\")} reason={r.get(\"reason\",\"\")})'
-          "
-          else
-            echo "  ⚠️ push_result.json 不存在"
-          fi
-
-          echo ""
-          echo "[后置验证] 发送确认消息到PushPlus..."
-          python -c "
-          import json, urllib.request, ssl, yaml
-
-          with open('config/config.yaml') as f:
-              cfg = yaml.safe_load(f)
-          token = cfg.get('pushplus', {}).get('token', '')
-          print(f'Token长度: {len(token)}')
-
-          if not token:
-              print('❌ Token为空！')
-              exit(0)
-
-          payload = {
-              'token': token,
-              'title': '✅ 后置验证 - Actions运行完成',
-              'content': '''
-          <p><b>GitHub Actions 运行完成</b></p>
-          <p>如果你只收到这条消息而没收到预测消息，说明主运行流程中的推送环节有问题。</p>
-          <p>请将此情况反馈给开发者。</p>
-          <hr>
-          <p style=\"color:#888;font-size:12px;\">时间: $(date -u '+%Y-%m-%d %H:%M:%S UTC')</p>
-          ''',
-              'template': 'html',
-          }
-          ctx = ssl.create_default_context()
-          req = urllib.request.Request(
-              'https://www.pushplus.plus/send',
-              data=json.dumps(payload).encode('utf-8'),
-              headers={'Content-Type': 'application/json'},
-              method='POST'
-          )
-          resp = urllib.request.urlopen(req, timeout=30, context=ctx)
-          body = json.loads(resp.read().decode('utf-8'))
-          print(f'API响应: {body}')
-          if body.get('code') == 200:
-              print('✅ 后置验证推送成功！（手机应收到「✅ 后置验证」消息）')
-          else:
-              print(f'❌ API返回错误: {body}')
-          "
-
-          echo ""
-          echo "═══════════════════════════════════════"
-
-      # ═══════════════════════════════════════════
-      # 结果检查与诊断
-      # ═══════════════════════════════════════════
       - name: 检查推送结果
         if: always()
-        run: |
-          echo "═══════════════════════════════════════"
-          echo "  推送结果最终检查 + 诊断信息"
-          echo "═══════════════════════════════════════"
-
-          if [ -f predict_diagnostic.json ]; then
-            echo ""
-            echo "📋 predict_diagnostic.json（执行路径追踪）:"
-            python -c "
-          import json
-          with open('predict_diagnostic.json') as f:
-              d = json.load(f)
-          for k, v in d.items():
-              if not k.startswith('_'):
-                  print(f'    {k}: {v}')
-          "
-          else
-            echo ""
-            echo "  ⚠️ predict_diagnostic.json 不存在 → cmd_predict 可能未被调用"
-          fi
-
-          if [ -f push_result.json ]; then
-            echo ""
-            echo "📋 push_result.json:"
-            python -c "
-          import json, sys
-          with open('push_result.json') as f:
-              r = json.load(f)
-          status = r.get('status', 'unknown')
-          issue = r.get('issue', '?')
-          reason = r.get('reason', '')
-          error_type = r.get('error_type', '')
-          detail = r.get('error_detail', '')
-          api_resp = r.get('api_response', {})
-          icons = {'success': '✅', 'failed': '❌'}
-          print(f'  推送状态: {icons.get(status, \"⚠️\")} {status}')
-          print(f'  预测期号: {issue}')
-          if reason:
-              print(f'  失败原因: {reason}')
-          if error_type:
-              print(f'  异常类型: {error_type}')
-          if detail:
-              print(f'  详细信息: {detail[:300]}')
-          if api_resp:
-              print(f'  API响应: {api_resp}')
-
-          if status != 'success':
-              print('')
-              print('  ⛔ 推送未成功！此步骤将以失败状态退出')
-              sys.exit(1)
-          "
-          else
-            echo ""
-            echo "  ⚠️ push_result.json 不存在"
-            echo "  → cmd_predict 的推送代码路径未执行到"
-            echo ""
-            echo "  请查看上方 predict_diagnostic.json 确认执行断点"
-            echo "::error::push_result.json 不存在 - 推送代码未执行"
-          fi
-
-          echo ""
-          echo "═══════════════════════════════════════"
+        run: python scripts/check_push_result.py
 
       - name: 打印校准状态
         if: always()
@@ -308,7 +110,7 @@ jobs:
         run: python main.py health || true
 
       # ═══════════════════════════════════════════
-      # 保存数据库到缓存（下次运行可快速恢复）
+      # 保存缓存
       # ═══════════════════════════════════════════
       - name: Post 保存数据库缓存
         if: always()
