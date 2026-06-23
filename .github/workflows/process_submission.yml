@@ -40,17 +40,16 @@ jobs:
         uses: actions/cache@v4
         with:
           path: data/daletou.db
-          key: daletou-db-${{ runner.os }}-py311-${{ hashFiles('**/requirements.txt') }}
+          key: daletou-db-v2-${{ runner.os }}-py311-${{ hashFiles('data/seed_data.json') }}
           restore-keys: |
-            daletou-db-${{ runner.os }}-py311-
+            daletou-db-v2-${{ runner.os }}-py311-
 
-      - name: 缓存未命中时初始化数据库
+      - name: 缓存未命中时从种子加载（纯本地模式）
         if: steps.cache-db.outputs.cache-hit != 'true'
         run: |
-          echo "[缓存] 首次运行或缓存过期，从体彩API拉取全量数据..."
-          python main.py init
-          python main.py fetch-all
-          echo "[缓存] 全量数据拉取完成"
+          echo "[缓存] 未命中，从种子文件加载..."
+          python main.py init && python main.py load-seed
+          echo "[缓存] 种子加载完成"
 
       - name: 写入 PushPlus Token 到配置文件
         env:
