@@ -1,7 +1,7 @@
 submit:
-  url: https://83295fe294884faebe5bfffee0f30c84.app.codebuddy.work/submit.html
+  url: http://192.168.3.5:7788/submit
 pushplus:
-  token: test_token_from_env_12345
+  token: 5061c14a3f6e4a82abb0fc9f11879aff
   api_url: http://www.pushplus.plus/send
 database:
   path: data/daletou.db
