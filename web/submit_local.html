@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>大乐透开奖数据提交（本地）</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', sans-serif;
+      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+    }
+    .card {
+      background: rgba(255,255,255,0.95);
+      border-radius: 20px;
+      padding: 28px 24px;
+      width: 100%;
+      max-width: 400px;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+    }
+    h1 { text-align: center; font-size: 20px; color: #1a1a2e; margin-bottom: 6px; }
+    .subtitle { text-align: center; font-size: 13px; color: #666; margin-bottom: 24px; }
+
+    .form-group { margin-bottom: 18px; }
+    label { display: block; font-size: 14px; font-weight: 600; color: #333; margin-bottom: 6px; }
+    .hint { font-size: 12px; color: #999; font-weight: normal; }
+
+    .front-inputs { display: flex; gap: 6px; }
+    .front-inputs input {
+      flex: 1; padding: 10px 4px; font-size: 16px;
+      aspect-ratio: 1; border-radius: 8px; text-align: center;
+      border: 2px solid #e0e0e0; outline: none; font-weight: bold;
+      transition: border-color 0.2s;
+    }
+    .front-inputs input:focus { border-color: #4a90d9; }
+    .back-inputs { display: flex; gap: 10px; }
+    .back-inputs input {
+      flex: 1; padding: 10px 4px; font-size: 16px;
+      aspect-ratio: 1.3; border-radius: 8px; text-align: center;
+      border: 2px solid #e0e0e0; outline: none; font-weight: bold;
+      transition: border-color 0.2s;
+    }
+    .back-inputs input:focus { border-color: #4a90d9; }
+
+    .section-label {
+      display: inline-block; font-size: 11px; color: #fff;
+      background: #e74c3c; padding: 2px 8px; border-radius: 4px;
+      margin-bottom: 6px; font-weight: 600;
+    }
+    .section-label.blue { background: #3498db; }
+
+    .btn-submit {
+      width: 100%; padding: 14px;
+      background: linear-gradient(135deg, #27ae60, #1e8449);
+      color: #fff; border: none; border-radius: 12px;
+      font-size: 17px; font-weight: 700; cursor: pointer;
+      margin-top: 8px; transition: transform 0.1s, box-shadow 0.2s;
+    }
+    .btn-submit:active { transform: scale(0.97); }
+    .btn-submit:hover { box-shadow: 0 6px 20px rgba(39,174,96,0.4); }
+    .btn-submit:disabled { background: #999; cursor: not-allowed; }
+
+    .server-status {
+      display: flex; align-items: center; gap: 6px;
+      font-size: 12px; color: #666; margin-bottom: 16px; justify-content: center;
+    }
+    .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+    .dot.ok { background: #27ae60; }
+    .dot.err { background: #e74c3c; }
+
+    .result-msg {
+      display: none; border-radius: 10px; padding: 12px 16px;
+      margin-top: 12px; font-size: 14px; text-align: center;
+    }
+    .result-msg.success { display: block; background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+    .result-msg.error   { display: block; background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+
+    .footer { text-align: center; margin-top: 18px; font-size: 11px; color: #aaa; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>🎯 大乐透开奖数据</h1>
+    <p class="subtitle">提交到本地数据库（无需 GitHub）</p>
+
+    <div class="server-status" id="serverStatus">
+      <span class="dot" id="statusDot"></span>
+      <span id="statusText">检测服务连接...</span>
+    </div>
+
+    <div class="form-group">
+      <label>期号 <span class="hint">（如 26070）</span></label>
+      <input type="text" id="issue" placeholder="26070" maxlength="7"
+             style="width:100%;padding:12px 14px;border:2px solid #e0e0e0;border-radius:10px;font-size:18px;font-weight:bold;text-align:center;outline:none;letter-spacing:2px;"
+             autocomplete="off">
+    </div>
+
+    <div class="form-group">
+      <span class="section-label">前区（5个号码）</span>
+      <label class="hint">01-35，不重复</label>
+      <div class="front-inputs" id="frontInputs">
+        <input type="number" min="1" max="35" placeholder="--" data-idx="0">
+        <input type="number" min="1" max="35" placeholder="--" data-idx="1">
+        <input type="number" min="1" max="35" placeholder="--" data-idx="2">
+        <input type="number" min="1" max="35" placeholder="--" data-idx="3">
+        <input type="number" min="1" max="35" placeholder="--" data-idx="4">
+      </div>
+    </div>
+
+    <div class="form-group">
+      <span class="section-label blue">后区（2个号码）</span>
+      <label class="hint">01-12，不重复</label>
+      <div class="back-inputs" id="backInputs">
+        <input type="number" min="1" max="12" placeholder="--" data-idx="0">
+        <input type="number" min="1" max="12" placeholder="--" data-idx="1">
+      </div>
+    </div>
+
+    <button class="btn-submit" onclick="submitData()" id="submitBtn">提交到本地数据库</button>
+
+    <div class="result-msg" id="resultMsg"></div>
+
+    <p class="footer">
+      数据直接写入本地 DB，提交后预测系统自动读取<br>
+      手机和电脑需在同一 Wi-Fi 下
+    </p>
+  </div>
+
+<script>
+// 自动检测服务地址（同源，适配手机访问）
+var API_BASE = '';  // 空串 = 同源
+
+function checkServer() {
+  fetch(API_BASE + '/api/submit', { method: 'OPTIONS' })
+    .then(function(r) {
+      document.getElementById('statusDot').className = 'dot ok';
+      document.getElementById('statusText').textContent = '已连接到本地服务';
+    })
+    .catch(function() {
+      document.getElementById('statusDot').className = 'dot err';
+      document.getElementById('statusText').textContent = '无法连接服务，请确保提交服务已启动';
+    });
+}
+
+// 页面加载时检测
+checkServer();
+
+// 输入框自动跳转
+document.querySelectorAll('#frontInputs input, #backInputs input').forEach(function(el) {
+  el.addEventListener('input', function() {
+    var val = this.value;
+    if (val.length >= 2) {
+      var container = this.closest('.front-inputs') || this.closest('.back-inputs');
+      var inputs = Array.from(container.querySelectorAll('input'));
+      var idx = inputs.indexOf(this);
+      if (idx < inputs.length - 1) inputs[idx + 1].focus();
+      else document.getElementById('submitBtn').focus();
+    }
+  });
+});
+
+function getValues(containerId, count) {
+  var vals = [];
+  for (var i = 0; i < count; i++) {
+    var el = document.querySelector('#' + containerId + ' input[data-idx="' + i + '"]');
+    var v = el && el.value ? parseInt(el.value) : NaN;
+    vals.push(v);
+  }
+  return vals;
+}
+
+function showResult(msg, isSuccess) {
+  var el = document.getElementById('resultMsg');
+  el.className = 'result-msg ' + (isSuccess ? 'success' : 'error');
+  el.innerHTML = msg;
+  el.scrollIntoView({ behavior: 'smooth' });
+}
+
+function submitData() {
+  var btn = document.getElementById('submitBtn');
+  var issue = document.getElementById('issue').value.trim();
+  if (!issue) { alert('请输入期号'); return; }
+
+  var front = getValues('frontInputs', 5);
+  if (front.some(function(v){ return isNaN(v) || v < 1 || v > 35; })) {
+    alert('前区号码必须在 01-35 之间'); return;
+  }
+  if (new Set(front).size !== 5) { alert('前区号码不能重复'); return; }
+
+  var back = getValues('backInputs', 2);
+  if (back.some(function(v){ return isNaN(v) || v < 1 || v > 12; })) {
+    alert('后区号码必须在 01-12 之间'); return;
+  }
+  if (back[0] === back[1]) { alert('后区号码不能重复'); return; }
+
+  btn.textContent = '⏳ 提交中...';
+  btn.disabled = true;
+  document.getElementById('resultMsg').className = 'result-msg';
+
+  fetch(API_BASE + '/api/submit', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ issue: issue, front: front, back: back })
+  })
+  .then(function(r) { return r.json(); })
+  .then(function(data) {
+    if (data.ok) {
+      btn.textContent = '✅ 提交成功！';
+      btn.style.background = '#27ae60';
+      showResult('✅ ' + data.message + '<br>预测系统下次运行时会自动读取本期数据', true);
+      // 清空
+      document.getElementById('issue').value = '';
+      document.querySelectorAll('#frontInputs input, #backInputs input').forEach(function(el){ el.value=''; });
+      setTimeout(function() {
+        btn.textContent = '提交到本地数据库';
+        btn.style.background = '';
+        btn.disabled = false;
+      }, 4000);
+    } else {
+      throw new Error(data.error || '未知错误');
+    }
+  })
+  .catch(function(err) {
+    btn.textContent = '提交到本地数据库';
+    btn.disabled = false;
+    showResult('❌ 提交失败：' + err.message, false);
+  });
+}
+</script>
+</body>
+</html>
