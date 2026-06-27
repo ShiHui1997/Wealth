@@ -153,7 +153,10 @@ class DaletouPredictor:
             print(f"[预测] 多尺度融合打分模式 "
                   f"(窗口: {', '.join(f'{k}={v:.2f}' for k,v in wf_weights.items())})")
 
-        return scored[:top_n]
+        # 使用投资组合优化选择最终3注（不再简单取Top3）
+        return self.select_portfolio(
+            scored, top_n=top_n, storage=storage
+        )
 
     def format_prediction(self, prediction: List[Tuple[Dict, float]]) -> str:
         """格式化预测结果为可读文本"""
@@ -232,3 +235,172 @@ class DaletouPredictor:
             {submit_section}
         </div>
         """
+
+    # ═══════════════════════════════════════════════
+    # 投资组合优化（注间分散度控制）
+    # ═════════════════════════════════════════════════
+
+    def select_portfolio(self, scored: List[Tuple[Dict, float]],
+                         top_n: int = 3,
+                         storage = None,
+                         beta: float = None,
+                         gamma: float = None) -> List[Tuple[Dict, float]]:
+        """
+        从已打分的候选中选择最优3注组合（投资组合优化）
+        不再简单取Top3，而是考虑注间分散度和核心覆盖度
+
+        算法:
+          1. 锚点: 取个体得分最高的候选作为第1注 (b1)
+          2. 识别核心号码: 从Top-50候选中找出高频共享号
+          3. 第2注选择: 在Top-50中找使组合得分最高的候选
+             (约束: 与前2注至少共享2个前区号)
+          4. 第3注选择: 同理，进一步扩大覆盖
+
+        参数:
+            scored: 已打分的候选列表 [(candidate, score), ...] 按得分降序
+            top_n: 返回注数（默认3）
+            storage: 数据库实例（用于读取校准参数β, γ）
+            beta: 分散度惩罚系数（None时从DB读取）
+            gamma: 核心覆盖奖励系数（None时从DB读取）
+
+        返回:
+            [(候选, 得分), ...] 优化后的组合
+        """
+        if len(scored) < top_n:
+            return scored
+
+        # 从数据库读取校准参数
+        if beta is None:
+            beta = 0.15  # 默认值
+            if storage:
+                val = storage.get_calibration("portfolio_beta")
+                if val is not None:
+                    beta = val
+        if gamma is None:
+            gamma = 0.10  # 默认值
+            if storage:
+                val = storage.get_calibration("portfolio_gamma")
+                if val is not None:
+                    gamma = val
+
+        print(f"[组合优化] β={beta:.3f}, γ={gamma:.3f}")
+
+        # Top-K候选用于核心号识别（取前50个）
+        top_k = min(50, len(scored))
+        top_candidates = [s[0] for s in scored[:top_k]]
+
+        # 识别核心号码
+        core_numbers = self.analyzer.find_core_numbers(top_candidates, threshold=0.20)
+        print(f"[组合优化] 核心号码({len(core_numbers)}个): {core_numbers[:10]}")
+
+        # Step 1: 锚点 — 个体得分最高的候选
+        b1_cand, b1_score = scored[0]
+        portfolio = [b1_cand]
+        portfolio_scores = [b1_score]
+        used_indices = {0}
+
+        # Step 2: 选择第2注
+        best_idx2 = -1
+        best_portfolio_score2 = -1.0
+
+        search_range = min(80, len(scored))  # 在前80个候选中搜索
+        for idx in range(1, search_range):
+            if idx in used_indices:
+                continue
+            cand, score = scored[idx]
+
+            # 约束: 与已有注至少共享2个前区号（确保不过度分散）
+            min_overlap = 2
+            max_overlap = 4  # 也不能完全相同
+            overlap_ok = False
+            for existing in portfolio:
+                overlap = len(set(cand["front"]) & set(existing["front"]))
+                if min_overlap <= overlap <= max_overlap:
+                    overlap_ok = True
+                    break
+            if not overlap_ok:
+                continue
+
+            # 计算组合得分
+            test_portfolio = portfolio + [cand]
+            test_scores = portfolio_scores + [score]
+            disp = self.analyzer.compute_dispersion(test_portfolio)
+            cov = self.analyzer.compute_core_coverage(test_portfolio, top_candidates)
+            ps = self.analyzer.compute_portfolio_score(
+                test_portfolio, test_scores, disp, cov, beta, gamma
+            )
+
+            if ps > best_portfolio_score2:
+                best_portfolio_score2 = ps
+                best_idx2 = idx
+
+        if best_idx2 >= 0:
+            cand, score = scored[best_idx2]
+            portfolio.append(cand)
+            portfolio_scores.append(score)
+            used_indices.add(best_idx2)
+            disp = self.analyzer.compute_dispersion(portfolio)
+            print(f"[组合优化] 第2注选定: idx={best_idx2}, "
+                  f"个体得分={score:.4f}, 分散度={disp:.3f}")
+
+        # Step 3: 选择第3注
+        best_idx3 = -1
+        best_portfolio_score3 = -1.0
+
+        for idx in range(1, search_range):
+            if idx in used_indices:
+                continue
+            cand, score = scored[idx]
+
+            # 约束: 与第1注或第2注至少共享2个前区号
+            overlap_ok = False
+            min_overlap = 2
+            max_overlap = 4
+            for existing in portfolio:
+                overlap = len(set(cand["front"]) & set(existing["front"]))
+                if min_overlap <= overlap <= max_overlap:
+                    overlap_ok = True
+                    break
+            if not overlap_ok:
+                continue
+
+            test_portfolio = portfolio + [cand]
+            test_scores = portfolio_scores + [score]
+            disp = self.analyzer.compute_dispersion(test_portfolio)
+            cov = self.analyzer.compute_core_coverage(test_portfolio, top_candidates)
+            ps = self.analyzer.compute_portfolio_score(
+                test_portfolio, test_scores, disp, cov, beta, gamma
+            )
+
+            if ps > best_portfolio_score3:
+                best_portfolio_score3 = ps
+                best_idx3 = idx
+
+        if best_idx3 >= 0:
+            cand, score = scored[best_idx3]
+            portfolio.append(cand)
+            portfolio_scores.append(score)
+            disp = self.analyzer.compute_dispersion(portfolio)
+            print(f"[组合优化] 第3注选定: idx={best_idx3}, "
+                  f"个体得分={score:.4f}, 分散度={disp:.3f}")
+
+        # 如果选不满3注，用最高分候选补齐
+        while len(portfolio) < top_n and len(used_indices) < len(scored):
+            for idx in range(len(scored)):
+                if idx not in used_indices:
+                    cand, score = scored[idx]
+                    portfolio.append(cand)
+                    portfolio_scores.append(score)
+                    used_indices.add(idx)
+                    break
+
+        # 打印组合信息
+        disp = self.analyzer.compute_dispersion(portfolio)
+        cov = self.analyzer.compute_core_coverage(portfolio, top_candidates)
+        print(f"[组合优化] 最终组合: 分散度={disp:.3f}, 核心覆盖度={cov:.3f}")
+        for i, (cand, score) in enumerate(zip(portfolio, portfolio_scores), 1):
+            front_str = " ".join(f"{n:02d}" for n in cand["front"])
+            back_str = " ".join(f"{n:02d}" for n in cand["back"])
+            print(f"  第{i}注: [{front_str}] + [{back_str}] 得分={score:.4f}")
+
+        return list(zip(portfolio, portfolio_scores))

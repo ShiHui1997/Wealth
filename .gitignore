@@ -30,3 +30,10 @@ config/local.yaml
 # 临时文件
 submission_result.json
 push_result.json
+predict_diagnostic.json
+
+# WorkBuddy 本地项目数据
+.workbuddy/
+
+# 本地运行日志（JSON 日志不纳入仓库）
+logs/*.json

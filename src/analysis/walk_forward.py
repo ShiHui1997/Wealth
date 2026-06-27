@@ -19,7 +19,7 @@ from datetime import datetime
 class WalkForwardBacktester:
     """
     Walk-Forward 回测器
-    
+
     对每个窗口大小，模拟"用过去W期数据预测下一期"的过程，
     评估该窗口的预测能力，最终生成多窗口融合权重。
     """
@@ -39,16 +39,16 @@ class WalkForwardBacktester:
                      candidate_sample: int = 50) -> Dict:
         """
         执行完整的 Walk-Forward 回测
-        
+
         对每个窗口大小 W：
           遍历最近 test_periods 期，用 draws[t-W:t] 构建特征，
           评分真实开奖 draws[t]，并与随机候选基线对比
-        
+
         参数:
             draws: 全部历史开奖数据（按期号升序）
             test_periods: 回测的期数（从最近往前数）
             candidate_sample: 每期生成的随机候选数（用于计算基线）
-        
+
         返回:
             {
                 "window_results": {window_label: {stats}},
@@ -210,10 +210,10 @@ class WalkForwardBacktester:
     def _compute_window_weights(self, window_results: Dict) -> Dict[str, float]:
         """
         根据回测结果计算各窗口的融合权重
-        
+
         权重 ∝ max(0, predictive_power)
         然后归一化使总和为1
-        
+
         如果所有窗口预测力都<=0，则使用均匀权重
         """
         if not window_results:
@@ -314,16 +314,16 @@ class WalkForwardBacktester:
                           feature_weights: Optional[Dict] = None) -> float:
         """
         多尺度加权融合打分
-        
+
         对候选号码，在每个窗口下构建特征并打分，
         然后按窗口权重融合为最终得分
-        
+
         参数:
             candidate: {"front": [...], "back": [...]}
             draws: 全部历史开奖数据
             weights: 窗口权重 (如 {"50": 0.2, "100": 0.3, ...})
             feature_weights: 特征维度权重（传给 compute_similarity_score）
-        
+
         返回:
             融合后的相似度得分 (0~1)
         """

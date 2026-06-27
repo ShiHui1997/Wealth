@@ -575,3 +575,131 @@ class DaletouAnalyzer:
                     cur_odd -= 1
 
         return front
+
+    # ═══════════════════════════════════════════════
+    # 5. 注间分散度分析（投资组合优化）
+    # ═══════════════════════════════════════════════
+
+    def compute_dispersion(self, portfolio: List[Dict]) -> float:
+        """
+        计算注间分散度 D(B)
+        D(B) = 1 - 平均重叠率
+
+        参数:
+            portfolio: [{"front": [...], "back": [...]}, ...]  3注号码
+
+        返回:
+            0~1 之间的分散度（0=完全相同，1=完全不重叠）
+        """
+        if len(portfolio) < 2:
+            return 0.0
+
+        total_pairs = 0
+        total_overlap = 0
+
+        for i in range(len(portfolio)):
+            for j in range(i + 1, len(portfolio)):
+                set_i = set(portfolio[i]["front"])
+                set_j = set(portfolio[j]["front"])
+                overlap = len(set_i & set_j)
+                total_pairs += 1
+                total_overlap += overlap
+
+        avg_overlap = total_overlap / total_pairs if total_pairs > 0 else 0
+        dispersion = 1 - avg_overlap / 5  # 5个前区号
+        return max(0.0, min(1.0, dispersion))
+
+    def compute_core_coverage(self, portfolio: List[Dict],
+                              top_candidates: List[Dict]) -> float:
+        """
+        计算核心覆盖度 C(B)
+        衡量3注共享的号码是否在高质量候选中高频出现
+
+        参数:
+            portfolio: 选出的3注号码
+            top_candidates: Top-K候选（如Top-50），用于频率参考
+
+        返回:
+            0~1 之间的核心覆盖度
+        """
+        if not top_candidates:
+            return 0.0
+
+        # 统计 Top-K 候选中每个号码的出现频率
+        front_counter = Counter()
+        for cand in top_candidates:
+            for n in cand["front"]:
+                front_counter[n] += 1
+
+        total_cands = len(top_candidates)
+
+        # 找出3注中共享的前区号码（出现在至少2注中）
+        from collections import Counter as _Counter
+        all_front = []
+        for p in portfolio:
+            all_front.extend(p["front"])
+        appear_count = _Counter(all_front)
+        core_numbers = {n for n, cnt in appear_count.items() if cnt >= 2}
+
+        if not core_numbers:
+            return 0.0
+
+        # 核心号在Top-K中的平均频率占比
+        avg_freq_ratio = sum(
+            front_counter[n] / total_cands for n in core_numbers
+        ) / len(core_numbers)
+
+        return avg_freq_ratio
+
+    def compute_portfolio_score(self, portfolio: List[Dict],
+                                individual_scores: List[float],
+                                dispersion: float,
+                                core_coverage: float,
+                                beta: float = 0.15,
+                                gamma: float = 0.10) -> float:
+        """
+        计算组合得分（带分散度惩罚和核心覆盖奖励）
+
+        组合得分 = 平均个体得分 - β×分散度 + γ×核心覆盖度
+
+        参数:
+            portfolio: 3注号码
+            individual_scores: 每注的个体相似度得分
+            dispersion: 注间分散度
+            core_coverage: 核心覆盖度
+            beta: 分散度惩罚系数（越大→越偏好聚合）
+            gamma: 核心覆盖奖励系数（越大→越偏好高频共享号）
+
+        返回:
+            组合得分（越高越好）
+        """
+        avg_individual = sum(individual_scores) / len(individual_scores)
+        portfolio_score = avg_individual - beta * dispersion + gamma * core_coverage
+        return portfolio_score
+
+    def find_core_numbers(self, top_candidates: List[Dict],
+                          threshold: float = 0.5) -> List[int]:
+        """
+        从Top-K候选中识别核心号码
+
+        参数:
+            top_candidates: Top-K候选列表
+            threshold: 出现频率阈值（占Top-K的比例）
+
+        返回:
+            核心号码列表（按频率降序）
+        """
+        front_counter = Counter()
+        for cand in top_candidates:
+            for n in cand["front"]:
+                front_counter[n] += 1
+
+        total = len(top_candidates)
+        core = []
+        for n, cnt in front_counter.most_common(35):
+            freq = cnt / total
+            if freq >= threshold:
+                core.append(n)
+            else:
+                break
+        return core
