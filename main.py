@@ -349,6 +349,16 @@ def cmd_predict(args, config):
     _write_diagnostic("latest_issue", str(latest_issue))
     _write_diagnostic("next_issue", str(next_issue))
 
+    # 防重复推送：如果该期号已有推送记录，跳过
+    predicted_issues = storage.get_all_predicted_issues()
+    _write_diagnostic("already_predicted", next_issue in predicted_issues)
+    if next_issue in predicted_issues:
+        print(f"[预测] ⚠️ 第 {next_issue} 期已推送过预测，跳过重复推送")
+        print(f"  如需重新推送，请删除 predictions 表中该期记录后重试")
+        _write_push_result({"status": "skipped", "reason": "already_pushed", "issue": next_issue})
+        _write_diagnostic("exit_reason", "already_pushed")
+        return
+
     print(f"[预测] 开始预测第 {next_issue} 期...")
     prediction = predictor.predict(
         draws,

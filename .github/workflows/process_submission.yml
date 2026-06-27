@@ -63,6 +63,21 @@ jobs:
           ISSUE_NUMBER: ${{ github.event.issue.number }}
         run: python scripts/parse_issue.py
 
+      - name: 更新种子文件并提交到仓库（持久化开奖数据）
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          python main.py export-seed
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/seed_data.json
+          git diff --cached --quiet || {
+            git commit -m "data: 更新种子文件 - 新增开奖数据 (Issue #${ISSUE_NUMBER})"
+            git push origin main
+            echo "✅ 种子文件已更新并推送到仓库"
+          }
+
       - name: 验证 + 校准 + 预测 + 推送
         run: python main.py run
 
@@ -85,3 +100,10 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ISSUE_NUM: ${{ github.event.issue.number }}
         run: python scripts/close_issue.py
+
+      - name: 保存数据库缓存
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: data/daletou.db
+          key: daletou-db-v2-${{ runner.os }}-py311-${{ hashFiles('data/seed_data.json') }}

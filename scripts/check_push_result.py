@@ -46,12 +46,15 @@ if os.path.exists('push_result.json'):
         if r.get('api_response'):
             print(f'  API响应: {r["api_response"]}')
 
-        if status != 'success':
+        if status not in ('success', 'skipped'):
             print()
             print('  ⛔ 推送未成功！此步骤以失败状态退出')
             print()
             print('═' * 45)
             sys.exit(1)
+        elif status == 'skipped':
+            print()
+            print(f'  ℹ️ 推送已跳过（原因: {r.get("reason", "未知")}）')
         else:
             print()
             print('  🎉 推送成功！')
