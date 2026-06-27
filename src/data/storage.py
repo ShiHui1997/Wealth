@@ -71,6 +71,43 @@ class LotteryStorage:
                 )
             """)
 
+            # 表3b: 反事实对照组预测（随机选号对照组）
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS counterfactual_predictions (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    target_issue TEXT NOT NULL,
+                    predicted_at TEXT NOT NULL,
+                    rank        INTEGER NOT NULL,
+                    front_numbers TEXT NOT NULL,
+                    back_numbers  TEXT NOT NULL,
+                    similarity_score REAL DEFAULT 0,
+                    model_version  TEXT DEFAULT 'random_control',
+                    verified    INTEGER DEFAULT 0,
+                    front_match_count INTEGER DEFAULT NULL,
+                    back_match_count  INTEGER DEFAULT NULL,
+                    is_exact_match   INTEGER DEFAULT NULL
+                )
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_cf_predictions_issue
+                ON counterfactual_predictions(target_issue, rank)
+            """)
+
+            # 表3c: 反事实对照组验证汇总
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS counterfactual_verifications (
+                    issue           TEXT PRIMARY KEY,
+                    verified_at     TEXT NOT NULL,
+                    best_front_match INTEGER,
+                    best_back_match  INTEGER,
+                    any_front_match  INTEGER,
+                    any_back_match   INTEGER,
+                    avg_similarity   REAL,
+                    actual_front     TEXT,
+                    actual_back      TEXT
+                )
+            """)
+
             # 表4: 批次回归分析记录
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS batch_analysis (
@@ -369,6 +406,146 @@ class LotteryStorage:
         return self.verify_prediction(latest_issue)
 
     # ═══════════════════════════════════════════
+    # 反事实对照组：随机选号预测 + 验证
+    # ═══════════════════════════════════════════
+
+    def save_counterfactual_predictions(self, target_issue: str,
+                                       predictions: List[Dict]) -> None:
+        """保存一期反事实对照组预测（通常是3注随机号码）"""
+        with sqlite3.connect(self.db_path) as conn:
+            # 先清除该期旧记录，避免重复
+            conn.execute(
+                "DELETE FROM counterfactual_predictions WHERE target_issue = ?",
+                (target_issue,)
+            )
+            for rank, nums in enumerate(predictions, 1):
+                conn.execute("""
+                    INSERT INTO counterfactual_predictions
+                    (target_issue, predicted_at, rank,
+                     front_numbers, back_numbers, similarity_score, model_version)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    target_issue,
+                    datetime.now().isoformat(),
+                    rank,
+                    json.dumps(nums["front"]),
+                    json.dumps(nums["back"]),
+                    nums.get("score", 0.0),
+                    nums.get("model_version", "random_control"),
+                ))
+            conn.commit()
+
+    def get_counterfactual_predictions_by_issue(self, issue: str) -> List[Dict]:
+        """获取某期的反事实对照组预测"""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute("""
+                SELECT * FROM counterfactual_predictions
+                WHERE target_issue = ?
+                ORDER BY rank ASC
+            """, (issue,)).fetchall()
+            return [dict(r) for r in rows]
+
+    def verify_counterfactual_prediction(self, issue: str) -> Optional[Dict]:
+        """验证某期反事实对照组预测 vs 真实开奖"""
+        actual = self.get_draw_by_issue(issue)
+        if not actual:
+            return None
+
+        preds = self.get_counterfactual_predictions_by_issue(issue)
+        if not preds:
+            return None
+
+        actual_front = set(actual["front"])
+        actual_back = set(actual["back"])
+
+        best_front_match = 0
+        best_back_match = 0
+        any_front_3plus = 0
+        any_back_1plus = 0
+
+        with sqlite3.connect(self.db_path) as conn:
+            for pred in preds:
+                pred_front = set(json.loads(pred["front_numbers"]))
+                pred_back = set(json.loads(pred["back_numbers"]))
+
+                f_match = len(pred_front & actual_front)
+                b_match = len(pred_back & actual_back)
+
+                conn.execute("""
+                    UPDATE counterfactual_predictions
+                    SET verified = 1,
+                        front_match_count = ?,
+                        back_match_count = ?,
+                        is_exact_match = ?
+                    WHERE id = ?
+                """, (f_match, b_match,
+                       1 if (f_match == 5 and b_match == 2) else 0,
+                       pred["id"]))
+
+                best_front_match = max(best_front_match, f_match)
+                best_back_match = max(best_back_match, b_match)
+                if f_match >= 3:
+                    any_front_3plus = 1
+                if b_match >= 1:
+                    any_back_1plus = 1
+
+            avg_sim = sum(p.get("similarity_score", 0) for p in preds) / len(preds)
+            conn.execute("""
+                INSERT OR REPLACE INTO counterfactual_verifications
+                (issue, verified_at, best_front_match, best_back_match,
+                 any_front_match, any_back_match, avg_similarity,
+                 actual_front, actual_back)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (issue, datetime.now().isoformat(),
+                   best_front_match, best_back_match,
+                   any_front_3plus, any_back_1plus,
+                   avg_sim,
+                   json.dumps(actual["front"]),
+                   json.dumps(actual["back"])))
+            conn.commit()
+
+        return {
+            "issue": issue,
+            "actual_front": actual["front"],
+            "actual_back": actual["back"],
+            "best_front_match": best_front_match,
+            "best_back_match": best_back_match,
+            "any_front_3plus": bool(any_front_3plus),
+            "any_back_1plus": bool(any_back_1plus),
+            "predictions": preds,
+        }
+
+    def get_counterfactual_stats(self) -> Dict:
+        """汇总反事实对照组验证结果"""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT * FROM counterfactual_verifications ORDER BY issue ASC"
+            ).fetchall()
+            if not rows:
+                return {"total_verified": 0}
+
+            rows = [dict(r) for r in rows]
+            total = len(rows)
+            front_dist = {}
+            back_dist = {}
+            for r in rows:
+                f = r["best_front_match"]
+                b = r["best_back_match"]
+                front_dist[f] = front_dist.get(f, 0) + 1
+                back_dist[b] = back_dist.get(b, 0) + 1
+
+            return {
+                "total_verified": total,
+                "front_match_dist": front_dist,
+                "back_match_dist": back_dist,
+                "any_front_3plus_rate": sum(r["any_front_match"] for r in rows) / total,
+                "any_back_1plus_rate": sum(r["any_back_match"] for r in rows) / total,
+                "recent_issues": [r["issue"] for r in rows[-10:]],
+            }
+
+    # ═══════════════════════════════════════════
     # 批次回归分析记录
     # ═══════════════════════════════════════════
 
@@ -444,7 +621,7 @@ class LotteryStorage:
             rows = [dict(r) for r in rows]
 
             total = len(rows)
-            front_dist = {}  # 前区命中数分布
+            front_dist = {}
             back_dist = {}
             for r in rows:
                 f = r["best_front_match"]

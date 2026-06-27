@@ -31,6 +31,9 @@ from src.analysis.regression import BatchRegressionAnalyzer
 from src.analysis.calibration import SelfCalibrator
 from src.analysis.walk_forward import WalkForwardBacktester
 from src.analysis.statistics import StatisticalValidator
+from src.analysis.entropy import EntropyDiagnostics
+from src.analysis.monte_carlo import MonteCarloCalibrator
+from src.analysis.counterfactual import CounterfactualTracker
 from src.prediction.predictor import DaletouPredictor
 from src.notification.pushplus import PushPlusNotifier
 from src.utils.logger import RunLogger, HealthChecker
@@ -179,21 +182,27 @@ def cmd_fetch_all(args, config):
 
 
 def cmd_verify(args, config):
-    """验证预测 vs 真实开奖"""
+    """验证预测 vs 真实开奖（同时验证反事实对照组）"""
     storage = LotteryStorage(config["database"]["path"])
+    cf_tracker = CounterfactualTracker(storage)
 
     if args.issue:
-        result = storage.verify_prediction(args.issue)
+        issue = args.issue
+        result = storage.verify_prediction(issue)
+        cf_result = cf_tracker.verify(issue)
     else:
-        result = storage.verify_latest()
+        issue = storage.get_latest_issue()
+        result = storage.verify_prediction(issue) if issue else None
+        cf_result = cf_tracker.verify(issue) if issue else None
 
-    if result:
+    if result or cf_result:
         # 验证后尝试校准
         stats = storage.get_verification_stats()
         if stats["total_verified"] >= 5:
             print("\n[验证] 已验证 >= 5 期，建议运行校准: python main.py calibrate")
     else:
         print("\n[验证] 暂无预测或开奖数据可验证")
+
 
 
 def cmd_calibrate(args, config):
@@ -324,6 +333,54 @@ def cmd_stats(args, config):
             print(f"    窗口 {label}: {weight:.4f}")
 
 
+def cmd_entropy(args, config):
+    """信息熵诊断：判断历史数据是否接近理想随机"""
+    storage = LotteryStorage(config["database"]["path"])
+    draws = storage.get_all_draws()
+    if len(draws) < 10:
+        print("[熵诊断] 数据不足（至少10期），无法计算")
+        return
+
+    diag = EntropyDiagnostics(draws)
+    diag.print_report()
+
+    # 同时写入健康度到诊断文件，方便 Actions/自动化检查
+    report = diag.full_report()
+    _write_diagnostic("entropy_health", report["health_status"])
+    _write_diagnostic("entropy_flags", report["health_flags"])
+
+
+def cmd_monte_carlo(args, config):
+    """蒙特卡洛标定：Walk-Forward 对比模型 vs 随机对照"""
+    storage = LotteryStorage(config["database"]["path"])
+    draws = storage.get_all_draws()
+
+    test_periods = getattr(args, "periods", 50)
+    if len(draws) < test_periods + 50:
+        print(f"[MonteCarlo] 数据不足：需要至少 {test_periods + 50} 期，当前 {len(draws)} 期")
+        return
+
+    predictor = DaletouPredictor()
+    mc = MonteCarloCalibrator(storage, predictor)
+    candidates = getattr(args, "candidates", 500)
+    mc.run(
+        test_periods=test_periods,
+        candidates_count=candidates,
+        use_multi_scale=True,
+    )
+
+
+def cmd_counterfactual(args, config):
+    """反事实对照组：对比历史模型预测与随机对照的验证结果"""
+    storage = LotteryStorage(config["database"]["path"])
+    tracker = CounterfactualTracker(storage)
+
+    if args.issue:
+        tracker.print_comparison(issue=args.issue)
+    else:
+        tracker.print_comparison()
+
+
 def cmd_predict(args, config):
     """生成预测并推送"""
     _write_diagnostic("status", "started")
@@ -377,6 +434,12 @@ def cmd_predict(args, config):
     # 保存预测记录到数据库
     storage.save_prediction(next_issue, prediction)
     _write_diagnostic("db_saved", "ok")
+
+    # 同时生成反事实随机对照组并保存
+    cf_tracker = CounterfactualTracker(storage)
+    control_bets = cf_tracker.generate_random_control(count=top_n)
+    cf_tracker.save(next_issue, control_bets)
+    _write_diagnostic("counterfactual_saved", "ok")
 
     # ══════════════════════════════════
     # 推送阶段 - 全链路诊断日志
@@ -518,7 +581,7 @@ def cmd_run(args, config):
             storage_r = LotteryStorage(config["database"]["path"])
             cmd_verify(argparse.Namespace(issue=None), config)
 
-            # 自动补验证
+            # 自动补验证（模型预测 + 反事实对照组）
             all_draws = storage_r.get_all_draws()
             draw_issues = {d["issue"] for d in all_draws}
             pred_issues = storage_r.get_all_predicted_issues()
@@ -527,8 +590,10 @@ def cmd_run(args, config):
             pending = set(pred_issues) & draw_issues - verified_issues
             if pending:
                 print(f"[自动补验] 发现 {len(pending)} 期待补验证: {sorted(pending)}")
+                cf_tracker = CounterfactualTracker(storage_r)
                 for issue in sorted(pending):
                     result = storage_r.verify_prediction(issue)
+                    cf_tracker.verify(issue)
                     if result:
                         front_m = result.get("best_front_match", 0)
                         back_m = result.get("best_back_match", 0)
@@ -673,6 +738,14 @@ def main():
     p_export_seed = subparsers.add_parser("export-seed", help="导出当前DB为种子JSON文件")
     p_export_seed.add_argument("--output", default="data/seed_data.json", help="输出路径")
 
+    # 新增诊断命令
+    subparsers.add_parser("entropy", help="信息熵诊断：检查历史数据是否接近理想随机")
+    p_mc = subparsers.add_parser("monte-carlo", help="蒙特卡洛标定：Walk-Forward对比模型 vs 随机对照")
+    p_mc.add_argument("--periods", type=int, default=50, help="回测期数（默认50）")
+    p_mc.add_argument("--candidates", type=int, default=500, help="每期候选数（默认500，越小越快）")
+    p_cf = subparsers.add_parser("counterfactual", help="反事实对照组：对比模型与随机选号的历史命中")
+    p_cf.add_argument("--issue", type=str, default=None, help="指定期号对比")
+
     p_run = subparsers.add_parser("run", help="完整运行一次（验证+校准+预测+推送，纯本地）")
     p_run.add_argument("--no-push", action="store_true", help="不推送到PushPlus")
 
@@ -696,6 +769,9 @@ def main():
         "stats": cmd_stats,
         "predict": cmd_predict,
         "run": cmd_run,
+        "entropy": cmd_entropy,
+        "monte-carlo": cmd_monte_carlo,
+        "counterfactual": cmd_counterfactual,
     }
     commands[args.command](args, config)
 
